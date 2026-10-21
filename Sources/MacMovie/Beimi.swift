@@ -87,12 +87,12 @@ struct Beimi {
     static let base = URL(string: "https://v.luttt.com")!
 
     func fetch(_ url: URL) async throws -> String {
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 25
+        let request = PlaybackNetworking.request(url)
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
+        guard let response = response as? HTTPURLResponse else {
             throw SourceError.invalid("站点请求失败，请稍后重试。")
         }
+        guard response.statusCode == 200 else { throw PlaybackNetworking.httpError(response) }
         guard data.count < 5_000_000, let html = String(data: data, encoding: .utf8) else {
             throw SourceError.invalid("页面格式不受支持。")
         }

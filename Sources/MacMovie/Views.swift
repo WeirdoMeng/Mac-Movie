@@ -38,18 +38,33 @@ struct ContentView: View {
         .background(Theme.background)
         .tint(Theme.accent)
         .task { if model.page.movies.isEmpty { model.load() } }
+        .onChange(of: model.playbackFocusRequest) { _ in dismissSearchFocus() }
+        .onChange(of: model.showDetail) { showing in if showing { dismissSearchFocus() } }
+    }
+
+    private func dismissSearchFocus() {
+        searchFocused = false
+        NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
     private var mainContent: some View {
         VStack(spacing: 0) {
                 if let error = model.error {
-                    HStack(alignment: .top) {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.accent)
-                        Text(error).font(.callout).textSelection(.enabled)
-                        Spacer()
-                        Button("重试") { model.retry() }
-                        Button { model.error = nil } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭错误提示")
-                    }.padding(12).background(Theme.accent.opacity(0.1)).padding(.horizontal, 24).padding(.bottom, 12)
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top) {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.accent)
+                            Text(error).font(.callout).textSelection(.enabled)
+                            Spacer(minLength: 0)
+                            Button { model.error = nil } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭错误提示")
+                        }
+                        HStack {
+                            Button("重试") { model.retry() }
+                            if model.showDetail, model.playbackDiagnostics != nil {
+                                Button(model.diagnosticsCopied ? "已复制" : "复制诊断") { model.copyPlaybackDiagnostics() }
+                                    .help("复制播放诊断").accessibilityLabel("复制播放诊断")
+                            }
+                        }
+                    }.padding(12).background(Theme.accent.opacity(0.1)).padding(.horizontal, compact ? 14 : 24).padding(.bottom, 12)
                 }
                 if model.showDetail {
                     if model.detailLoading { Spacer(); ProgressView("正在读取影片详情…"); Spacer() }
@@ -63,7 +78,7 @@ struct ContentView: View {
     }
 
     private var compactToolbar: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             HStack(spacing: 8) {
                 if model.showDetail {
                     Button { model.showDetail = false } label: { Image(systemName: "chevron.left") }.accessibilityLabel("返回片库")
@@ -79,10 +94,14 @@ struct ContentView: View {
             }
             HStack(spacing: 8) {
                 TextField("搜索电影、电视剧", text: $model.query).textFieldStyle(.roundedBorder).focused($searchFocused).onSubmit { model.search() }
+                if !model.query.isEmpty || !model.searchTerm.isEmpty {
+                    Button { model.clearSearch() } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain).help("清空搜索").accessibilityLabel("清空搜索")
+                }
                 Button { model.search() } label: { Image(systemName: "magnifyingglass") }.accessibilityLabel("搜索")
             }
             if !model.showDetail {
-                CategoryScroll {
+                HorizontalChoices {
                     HStack(spacing: 6) {
                         ForEach(BrowseSection.all) { section in
                             Button { model.navigate(section) } label: {
@@ -93,10 +112,9 @@ struct ContentView: View {
                             }.buttonStyle(.plain)
                         }
                     }
-                }.frame(height: 38)
-                HStack { Text(model.title).font(.headline).lineLimit(1); Spacer() }
+                }.frame(height: 34)
             }
-        }.padding(compact ? 14 : 22).background(Theme.surface)
+        }.padding(.horizontal, compact ? 14 : 22).padding(.vertical, compact ? 10 : 22).background(Theme.surface)
             .onChange(of: desktop.focusSearch) { _ in searchFocused = true }
     }
 
@@ -140,7 +158,7 @@ struct ContentView: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("搜索影片", text: $model.query).textFieldStyle(.plain).focused($searchFocused).onSubmit { model.search() }
                 if !model.query.isEmpty {
-                    Button { model.query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).accessibilityLabel("清空搜索")
+                    Button { model.clearSearch() } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).accessibilityLabel("清空搜索")
                 }
             }.padding(9).frame(width: 210).background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
             Button("搜索") { model.search() }.disabled(model.loading)
@@ -191,15 +209,33 @@ struct CatalogView: View {
                 if !model.page.filters.isEmpty { filterControls }
             }
             HStack {
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                if model.section.id == "history", !model.history.isEmpty { Button("清空历史") { clearHistory = true } }
+                if compact {
+                    Text(model.title).font(.headline).lineLimit(1)
+                    if !compactCount.isEmpty { Text(compactCount).font(.caption).foregroundStyle(.secondary) }
+                } else { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
+                Spacer(minLength: 0)
+                if model.section.id == "history", !model.history.isEmpty {
+                    Button("清空历史") { clearHistory = true }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                }
                 if model.loading { ProgressView().controlSize(.small) }
             }
             if model.loading {
                 Spacer(); HStack { Spacer(); ProgressView("正在加载片库…"); Spacer() }; Spacer()
             } else if model.movies.isEmpty {
-                EmptyState(title: emptyTitle, message: emptyMessage, icon: model.section.id == "favorites" ? "heart" : "film")
+                EmptyState(title: emptyTitle, message: emptyMessage,
+                           icon: model.searchTerm.isEmpty && model.section.id == "favorites" ? "heart" : "film") {
+                    VStack(spacing: 10) {
+                        if !model.searchTerm.isEmpty {
+                            HStack {
+                                Button("清空搜索") { model.clearSearch() }
+                                Button("重新搜索") { model.search() }
+                            }
+                        } else if !model.page.filters.isEmpty {
+                            Button("重置筛选") { model.navigate(model.section) }
+                        }
+                        Button("返回片库") { model.navigate(BrowseSection.all[0]) }
+                    }
+                }
             } else {
                 ScrollViewReader { proxy in
                     ScrollView(showsIndicators: false) {
@@ -211,10 +247,10 @@ struct CatalogView: View {
                                           record: model.history.first { $0.id == movie.id },
                                           rank: model.section.id == "rank" && model.searchTerm.isEmpty ? index + 1 : nil,
                                           showProgress: model.section.id == "history") {
-                                    model.select(movie, resume: model.section.id == "history" && model.searchTerm.isEmpty)
+                                    model.select(movie)
                                 } favoriteAction: { model.toggleFavorite(movie) }
                                 .contextMenu {
-                                    Button("查看详情") { model.select(movie) }
+                                    Button("查看详情") { model.select(movie, resume: false) }
                                     Button(model.isFavorite(movie) ? "取消收藏" : "收藏") { model.toggleFavorite(movie) }
                                     if model.history.contains(where: { $0.id == movie.id }) {
                                         Button("继续播放") { model.select(movie, resume: true) }
@@ -234,6 +270,14 @@ struct CatalogView: View {
             } message: { Text("收藏和播放设置会保留。") }
     }
 
+    private var compactCount: String {
+        if !model.searchTerm.isEmpty { return "\(model.page.total ?? model.movies.count) 部" }
+        if model.section.id == "history" { return "\(model.history.count) 部" }
+        if model.section.id == "favorites" { return "\(model.favorites.count) 部" }
+        if model.section.id == "rank" { return model.rankPeriod }
+        return model.page.total.map { "\($0) 部" } ?? ""
+    }
+
     private var subtitle: String {
         if !model.searchTerm.isEmpty { return model.page.total.map { "共 \($0) 部影片" } ?? "搜索结果 · \(model.movies.count) 部影片" }
         if model.section.id == "history" { return "最近观看 · 自动保存播放进度" }
@@ -242,14 +286,18 @@ struct CatalogView: View {
         if model.section.id == "rank" { return "摸鱼视界 · \(model.rankPeriod)" }
         return model.page.total.map { "共 \($0) 部影片" } ?? "摸鱼视界 · 为下一次观影找点灵感"
     }
-    private var emptyTitle: String { model.section.id == "favorites" ? "收藏喜欢的影片" : model.section.id == "history" ? "还没有观看记录" : "没有找到影片" }
-    private var emptyMessage: String { model.section.id == "favorites" ? "点击海报或详情页的爱心，下次在这里找到它。" : model.section.id == "history" ? "开始播放后，这里会记录集数和进度。" : "试试其他关键词或筛选条件，也可以刷新重试。" }
+    private var emptyTitle: String { !model.searchTerm.isEmpty ? "没有找到影片" : model.section.id == "favorites" ? "收藏喜欢的影片" : model.section.id == "history" ? "还没有观看记录" : "没有找到影片" }
+    private var emptyMessage: String { !model.searchTerm.isEmpty ? "可以更换关键词、清空搜索，或返回片库继续浏览。" : model.section.id == "favorites" ? "点击海报或详情页的爱心，下次在这里找到它。" : model.section.id == "history" ? "开始播放后，这里会记录集数和进度。" : "试试其他筛选条件，或重置筛选后重新浏览。" }
 
     private var filterControls: some View {
-        ViewThatFits(in: .horizontal) {
-            filterRow
-            ScrollView(.horizontal, showsIndicators: false) { filterRow }
-        }
+        HStack(spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                filterRow
+                HorizontalChoices(fadeColor: Theme.background) { filterRow }.frame(height: 30)
+            }
+            Button("重置") { model.navigate(model.section) }
+                .fixedSize().help("重置全部筛选").accessibilityLabel("重置全部筛选").disabled(model.loading)
+        }.frame(height: 30)
     }
     private var filterRow: some View {
         HStack(spacing: 9) {
@@ -262,7 +310,7 @@ struct CatalogView: View {
                     }
                 } label: { Text("\(group.title)：\(group.options.first(where: \.selected)?.title ?? "全部")").font(.callout) }
             }
-        }.disabled(model.loading)
+        }.fixedSize(horizontal: true, vertical: false).disabled(model.loading)
     }
 
     private var rankControls: some View {
@@ -322,7 +370,7 @@ struct MovieCard: View {
                         else if !movie.score.isEmpty { Text(movie.score).font(.caption.bold()).foregroundStyle(Theme.accent).padding(7).background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 6)).padding(7) }
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 10))
-            }.buttonStyle(.plain).accessibilityLabel("查看\(movie.title)")
+            }.buttonStyle(.plain).accessibilityLabel(record == nil ? "播放\(movie.title)" : "继续播放\(movie.title)")
             HStack(alignment: .top) {
                 Button(action: select) { Text(movie.title).font(.headline).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading) }.buttonStyle(.plain)
                 Button(action: favoriteAction) { Image(systemName: favorite ? "heart.fill" : "heart").foregroundStyle(favorite ? Theme.accent : .secondary) }.buttonStyle(.plain).accessibilityLabel(favorite ? "取消收藏\(movie.title)" : "收藏\(movie.title)")
@@ -335,18 +383,31 @@ struct MovieCard: View {
     }
 }
 
-struct EmptyState: View {
+struct EmptyState<Actions: View>: View {
     let title: String
     let message: String
     let icon: String
+    let actions: Actions
+
+    init(title: String, message: String, icon: String, @ViewBuilder actions: () -> Actions) {
+        self.title = title; self.message = message; self.icon = icon; self.actions = actions()
+    }
+
     var body: some View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: icon).font(.system(size: 44, weight: .light)).foregroundStyle(Theme.accent)
             Text(title).font(.title2.bold())
             Text(message).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            actions
             Spacer()
         }.frame(maxWidth: .infinity)
+    }
+}
+
+extension EmptyState where Actions == EmptyView {
+    init(title: String, message: String, icon: String) {
+        self.init(title: title, message: message, icon: icon) { EmptyView() }
     }
 }
 
@@ -370,6 +431,7 @@ struct SettingsView: View {
                 Text("窗口和快捷键均可在对应标签页设置，修改后立即生效。").font(.callout)
             }
         }.formStyle(.grouped).frame(width: 460, height: 430)
+            .background(HiddenScrollIndicators())
             .onChange(of: model.settings) { _ in model.updateSettings() }
     }
 }

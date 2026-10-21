@@ -6,8 +6,6 @@ struct DetailView: View {
     @ObservedObject var desktop: DesktopController
     let detail: MovieDetail
     var compact = false
-    @State private var sliderPosition: Double = 0
-    @State private var dragging = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -24,7 +22,7 @@ struct DetailView: View {
                         ProgressView("准备播放…").padding(18).background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 10))
                     }
                 }.aspectRatio(16 / 9, contentMode: .fit).frame(maxHeight: 460).clipShape(RoundedRectangle(cornerRadius: 12))
-                controls
+                PlaybackControls(model: model, desktop: desktop, compact: compact)
                 Divider()
                 episodes
                 Divider()
@@ -33,8 +31,7 @@ struct DetailView: View {
                 Text(detail.summary.isEmpty ? "暂无剧情简介" : Theme.branded(detail.summary)).font(.callout).lineSpacing(6).textSelection(.enabled)
                 if !detail.recommendations.isEmpty { recommendations }
             }.padding(.horizontal, compact ? 14 : 24).padding(.bottom, 30)
-        }.onChange(of: model.position) { if !dragging { sliderPosition = $0 } }
-            .onChange(of: model.episode?.id) { _ in sliderPosition = 0 }
+        }
     }
 
     private var resumeTitle: String {
@@ -54,52 +51,6 @@ struct DetailView: View {
             }
             ShareLink(item: Beimi.base.appendingPathComponent("voddetail/\(detail.movie.id).html")) { Image(systemName: "square.and.arrow.up") }.help("分享影片页面")
         }
-    }
-
-    private var controls: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                Text(PlaybackPolicy.time(dragging ? sliderPosition : model.position)).font(.caption.monospacedDigit()).frame(width: 58)
-                Slider(value: $sliderPosition, in: 0...max(1, model.duration)) { editing in
-                    dragging = editing
-                    if !editing { model.seek(to: sliderPosition) }
-                }.disabled(model.episode == nil || model.duration <= 0 || model.resolving).accessibilityLabel("播放进度")
-                Text(PlaybackPolicy.time(model.duration)).font(.caption.monospacedDigit()).frame(width: 58)
-            }
-            ViewThatFits(in: .horizontal) {
-                HStack { transportControls; speedControls }
-                VStack(alignment: .leading, spacing: 12) { transportControls; speedControls }
-            }
-            HStack {
-                Text(model.playbackStatus).font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                if let episode = model.episode {
-                    Button("从头播放") { model.play(episode, from: 0) }
-                    Button("重试") { model.play(episode, from: model.position) }
-                }
-            }
-        }.onChange(of: model.settings) { _ in model.updateSettings() }
-    }
-
-    private var transportControls: some View {
-            HStack(spacing: compact ? 12 : 14) {
-                Button { model.togglePlayback() } label: { Image(systemName: model.isPlaying ? "pause.fill" : "play.fill") }.accessibilityLabel(model.isPlaying ? "暂停" : "播放").disabled(model.episode == nil || model.resolving)
-                Button { model.seek(to: model.position - 10) } label: { Image(systemName: "gobackward.10") }.help("后退 10 秒").accessibilityLabel("后退 10 秒").disabled(model.episode == nil || model.resolving)
-                Button { model.seek(to: model.position + 10) } label: { Image(systemName: "goforward.10") }.help("前进 10 秒").accessibilityLabel("前进 10 秒").disabled(model.episode == nil || model.resolving)
-                Button { if let previous = model.previousEpisode { model.play(previous) } } label: { Image(systemName: "backward.end") }.help("上一集").accessibilityLabel("上一集").disabled(model.previousEpisode == nil)
-                Button { if let next = model.nextEpisode { model.play(next, from: 0) } } label: { Image(systemName: "forward.end") }.help("下一集").accessibilityLabel("下一集").disabled(model.nextEpisode == nil)
-                Spacer(minLength: 0)
-                Button { desktop.perform(.windowFill) } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }.help("窗口全屏").accessibilityLabel("窗口全屏")
-            }.buttonStyle(.borderless)
-    }
-
-    private var speedControls: some View {
-            HStack {
-                Picker("倍速", selection: $model.settings.rate) {
-                    ForEach([Float(0.5), 0.75, 1, 1.25, 1.5, 2], id: \.self) { Text("\($0, specifier: "%g")×").tag($0) }
-                }.labelsHidden().frame(width: 78)
-                Toggle("自动下一集", isOn: $model.settings.autoNext).toggleStyle(.checkbox).font(.caption)
-            }.fixedSize(horizontal: true, vertical: false)
     }
 
     private var episodes: some View {
@@ -145,6 +96,79 @@ struct DetailView: View {
     }
 }
 
+struct PlaybackControls: View {
+    @ObservedObject var model: Library
+    @ObservedObject var desktop: DesktopController
+    var compact = false
+    var windowMode = false
+    @State private var sliderPosition: Double = 0
+    @State private var dragging = false
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Text(PlaybackPolicy.time(dragging ? sliderPosition : model.position)).font(.caption.monospacedDigit()).frame(width: 58)
+                Slider(value: $sliderPosition, in: 0...max(1, model.duration)) { editing in
+                    dragging = editing
+                    if !editing { model.seek(to: sliderPosition) }
+                }.disabled(model.episode == nil || model.duration <= 0 || model.resolving).accessibilityLabel("播放进度")
+                Text(PlaybackPolicy.time(model.duration)).font(.caption.monospacedDigit()).frame(width: 58)
+            }
+            if windowMode { transportControls }
+            else {
+                ViewThatFits(in: .horizontal) {
+                    HStack { transportControls; speedControls }
+                    VStack(alignment: .leading, spacing: 12) { transportControls; speedControls }
+                }
+                HStack {
+                    Text(model.playbackStatus).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if let episode = model.episode {
+                        if model.playbackDiagnostics != nil {
+                            Button("重试") { model.play(episode, from: model.position) }
+                        }
+                        Menu {
+                            Button("从头播放") { model.play(episode, from: 0) }
+                        } label: { Image(systemName: "ellipsis.circle") }
+                            .menuStyle(.borderlessButton).frame(width: 24).disabled(model.resolving)
+                            .help("更多播放操作").accessibilityLabel("更多播放操作")
+                    }
+                }
+            }
+        }.onChange(of: model.settings) { _ in model.updateSettings() }
+            .onAppear { sliderPosition = model.position }
+            .onChange(of: model.position) { if !dragging { sliderPosition = $0 } }
+            .onChange(of: model.episode?.id) { _ in sliderPosition = 0 }
+    }
+
+    private var transportControls: some View {
+            HStack(spacing: compact ? 12 : 14) {
+                Button { model.togglePlayback() } label: { Image(systemName: model.isPlaying ? "pause.fill" : "play.fill") }.accessibilityLabel(model.isPlaying ? "暂停" : "播放").disabled(model.episode == nil || model.resolving)
+                Button { model.seek(to: model.position - 10) } label: { Image(systemName: "gobackward.10") }.help("后退 10 秒").accessibilityLabel("后退 10 秒").disabled(model.episode == nil || model.resolving)
+                Button { model.seek(to: model.position + 10) } label: { Image(systemName: "goforward.10") }.help("前进 10 秒").accessibilityLabel("前进 10 秒").disabled(model.episode == nil || model.resolving)
+                Button { if let previous = model.previousEpisode { model.play(previous) } } label: { Image(systemName: "backward.end") }.help("上一集").accessibilityLabel("上一集").disabled(model.previousEpisode == nil)
+                Button { if let next = model.nextEpisode { model.play(next, from: 0) } } label: { Image(systemName: "forward.end") }.help("下一集").accessibilityLabel("下一集").disabled(model.nextEpisode == nil)
+                Spacer(minLength: 0)
+                if windowMode { speedPicker }
+                Button { desktop.perform(.windowFill) } label: { Image(systemName: desktop.windowFill ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") }.help(desktop.windowFill ? "退出窗口全屏" : "窗口全屏").accessibilityLabel(desktop.windowFill ? "退出窗口全屏" : "窗口全屏")
+            }.buttonStyle(.borderless)
+    }
+
+    private var speedControls: some View {
+            HStack {
+                speedPicker
+                Toggle("自动下一集", isOn: $model.settings.autoNext).toggleStyle(.checkbox).font(.caption)
+            }.fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var speedPicker: some View {
+        Picker("倍速", selection: $model.settings.rate) {
+            ForEach([Float(0.5), 0.75, 1, 1.25, 1.5, 2], id: \.self) { Text("\($0, specifier: "%g")×").tag($0) }
+        }.labelsHidden().frame(width: windowMode ? 56 : 78)
+    }
+
+}
+
 final class KeyboardPlayerView: AVPlayerView {
     var windowFill: (() -> Void)?
     override var acceptsFirstResponder: Bool { true }
@@ -161,7 +185,7 @@ struct NativePlayer: NSViewRepresentable {
     let windowFill: () -> Void
     func makeNSView(context: Context) -> KeyboardPlayerView {
         let view = KeyboardPlayerView()
-        view.player = player; view.controlsStyle = .floating; view.showsFullScreenToggleButton = false
+        view.player = player; view.controlsStyle = .none; view.showsFullScreenToggleButton = false
         view.windowFill = windowFill
         return view
     }

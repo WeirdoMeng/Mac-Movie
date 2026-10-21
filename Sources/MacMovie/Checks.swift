@@ -77,5 +77,29 @@ enum Checks {
         try require(recovered.readError != nil && recovered.data.history.isEmpty && defaults.data(forKey: LocalLibrary.key + ".recovery") != nil, "本地记录损坏时保留原数据并可继续使用")
         print("PASS: 25 parser, pagination, playback-policy and persistence checks")
         try ShortcutChecks.run()
+        try networkingChecks()
+    }
+
+    private static func networkingChecks() throws {
+        func check(_ value: Bool, _ message: String) throws {
+            if !value { throw SourceError.invalid("NETWORK CHECK FAILED: " + message) }
+        }
+        let url = URL(string: "https://example.com/video.m3u8?token=private-link")!
+        let request = PlaybackNetworking.request(url)
+        try check(request.value(forHTTPHeaderField: "User-Agent") == PlaybackNetworking.userAgent, "页面和媒体使用一致的浏览器标识")
+        try check(request.value(forHTTPHeaderField: "Referer") == nil, "遵循网页无Referer行为")
+        let inner = NSError(domain: NSURLErrorDomain, code: NSURLErrorNoPermissionsToReadFile, userInfo: [NSURLErrorFailingURLErrorKey: url])
+        let outer = NSError(domain: "AVFoundationErrorDomain", code: -11800, userInfo: [NSUnderlyingErrorKey: inner])
+        let permission = PlaybackIssue(error: outer, fallback: "原始错误", mediaURL: url)
+        try check(permission.message.contains("视频资源访问被拒绝") && permission.diagnostics.contains("-1102"), "识别嵌套资源许可错误")
+        let forbidden = PlaybackIssue(error: outer, fallback: "原始错误", mediaURL: url, events: [(403, url.absoluteString)])
+        try check(forbidden.message.contains("HTTP 403") && forbidden.diagnostics.contains("example.com"), "媒体错误日志保留HTTP状态")
+        try check(!forbidden.diagnostics.contains("private-link") && !forbidden.diagnostics.contains("video.m3u8"), "诊断不导出地址参数或路径")
+        let response = HTTPURLResponse(url: url, statusCode: 403, httpVersion: nil, headerFields: nil)!
+        let fetchFailure = PlaybackIssue(error: PlaybackNetworking.httpError(response), fallback: "失败", mediaURL: nil)
+        try check(fetchFailure.message.contains("HTTP 403"), "页面请求错误保留HTTP状态")
+        let timeout = PlaybackIssue(error: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut), fallback: "请求超时", mediaURL: nil)
+        try check(timeout.message == "请求超时", "不将其他网络错误误报为权限错误")
+        print("PASS: 7 media request and redacted diagnostic checks")
     }
 }

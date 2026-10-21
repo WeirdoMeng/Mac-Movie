@@ -9,16 +9,23 @@ struct MacMovieApp {
             do { try Checks.run(); exit(0) }
             catch { print(error.localizedDescription); exit(1) }
         }
+        if arguments.contains("--clear-network-cache") {
+            setbuf(stdout, nil)
+            let cookies = HTTPCookieStorage.shared.cookies?.count ?? 0
+            URLCache.shared.removeAllCachedResponses()
+            HTTPCookieStorage.shared.removeCookies(since: .distantPast)
+            print("CLEARED: network cache and \(cookies) cookies; remaining cookies=\(HTTPCookieStorage.shared.cookies?.count ?? 0), disk cache=\(URLCache.shared.currentDiskUsage), memory cache=\(URLCache.shared.currentMemoryUsage)")
+        }
         let delegate = MovieAppDelegate()
         app.delegate = delegate
         app.setActivationPolicy(.regular)
-        if arguments.contains(where: { ["--probe", "--audit", "--window-check"].contains($0) }) {
+        if arguments.contains(where: { ["--probe", "--relay-probe", "--audit", "--window-check"].contains($0) }) {
             setbuf(stdout, nil)
             Task { @MainActor in
                 do {
                     if arguments.contains("--window-check") { try await ShortcutChecks.windowCheck() }
                     else if arguments.contains("--audit") { try await Probe.audit() }
-                    else { try await Probe.run() }
+                    else { try await Probe.run(useRelay: arguments.contains("--relay-probe"), retryDeniedMedia: !arguments.contains("--no-relay")) }
                     exit(0)
                 } catch {
                     let failure = error as NSError

@@ -21,7 +21,19 @@ final class DesktopController: ObservableObject {
             persist(); applyAppearance()
         }
     }
-    @Published var windowFill = false
+    @Published var windowFill = false {
+        didSet {
+            guard windowFill != oldValue, let window else { return }
+            if windowFill {
+                heightBeforeWindowFill = window.frame.height
+                fitPlaybackWindow()
+            }
+            else if let height = heightBeforeWindowFill {
+                heightBeforeWindowFill = nil
+                setWindowHeight(height)
+            }
+        }
+    }
     @Published var showSettings = false
     @Published var focusSearch = UUID()
     let shortcuts: ShortcutManager
@@ -29,6 +41,7 @@ final class DesktopController: ObservableObject {
     private let defaults: UserDefaults
     private weak var library: Library?
     private var applying = false
+    private var heightBeforeWindowFill: CGFloat?
     private var savedStyle: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable]
     static let key = "macmovie.window.v1"
     static let defaultWindowSize = NSSize(width: 299, height: 531)
@@ -87,6 +100,31 @@ final class DesktopController: ObservableObject {
         }
         window.alphaValue = Self.opacity(preferences.opacity)
         window.level = preferences.pinned ? .floating : .normal
+    }
+
+    private func fitPlaybackWindow() {
+        guard let window else { return }
+        let width = window.contentView?.bounds.width ?? window.contentLayoutRect.width
+        fitWindowPlayer(contentHeight: width * 9 / 16)
+    }
+
+    func fitWindowPlayer(contentHeight: CGFloat) {
+        guard windowFill, let window, !window.styleMask.contains(.fullScreen),
+              contentHeight.isFinite, contentHeight > 0 else { return }
+        let chrome = window.frame.height - (window.contentView?.bounds.height ?? window.contentLayoutRect.height)
+        setWindowHeight(ceil(contentHeight + chrome))
+    }
+
+    private func setWindowHeight(_ height: CGFloat) {
+        guard let window, !window.styleMask.contains(.fullScreen), height.isFinite else { return }
+        let height = max(window.minSize.height, height)
+        guard abs(window.frame.height - height) > 0.5 else { return }
+        var frame = window.frame
+        frame.origin.y = frame.maxY - height
+        frame.size.height = height
+        applying = true
+        window.setFrame(frame, display: true)
+        applying = false
     }
 
     func saveFrame() {
@@ -179,7 +217,7 @@ final class MovieAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard !CommandLine.arguments.contains(where: { ["--check", "--probe", "--audit", "--window-check"].contains($0) }) else { return }
+        guard !CommandLine.arguments.contains(where: { ["--check", "--probe", "--relay-probe", "--audit", "--window-check"].contains($0) }) else { return }
         prepareMenus()
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1180, height: 800)
         let size = NSSize(width: min(DesktopController.defaultWindowSize.width, screen.width), height: min(DesktopController.defaultWindowSize.height, screen.height))

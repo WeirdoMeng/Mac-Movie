@@ -9,12 +9,15 @@ final class Library: ObservableObject {
     @Published var query = ""
     @Published var section = BrowseSection.all[0]
     @Published var showDetail = false
+    @Published private(set) var playbackFocusRequest = UUID()
     @Published var loading = false
     @Published var loadingMore = false
     @Published var loadMoreError: String?
     @Published var detailLoading = false
     @Published var resolving = false
     @Published var error: String?
+    @Published private(set) var playbackDiagnostics: String?
+    @Published private(set) var diagnosticsCopied = false
     @Published var playbackStatus = "选择剧集开始播放"
     @Published var isPlaying = false
     @Published var position: Double = 0
@@ -30,6 +33,8 @@ final class Library: ObservableObject {
     let player = AVPlayer()
     private let source = Beimi()
     private let loadPage: (URL) async throws -> CatalogPage
+    private let preferCompatibilityRelay: Bool
+    private let retryDeniedMedia: Bool
     private var loadedPages = Set<URL>()
     private let local: LocalLibrary
     private(set) var currentURL = Beimi.base
@@ -49,10 +54,18 @@ final class Library: ObservableObject {
     private var lastSave = Date.distantPast
     private var playbackFailed = false
     private var playbackEnded = false
+    private var currentMediaURL: URL?
+    private var mediaRelay: HLSRelay?
+    private var webResolver: WebPlaybackResolver?
+    private(set) var webEvidence = ""
+    private var retriedMediaAccess = false
+    private var requestedResume: Double = 0
     private var requiresManualPlayback = false
     private var detailMovie: Movie?
 
-    init(defaults: UserDefaults = .standard, pageLoader: ((URL) async throws -> CatalogPage)? = nil) {
+    init(defaults: UserDefaults = .standard, pageLoader: ((URL) async throws -> CatalogPage)? = nil, preferCompatibilityRelay: Bool = false, retryDeniedMedia: Bool = true) {
+        self.preferCompatibilityRelay = preferCompatibilityRelay
+        self.retryDeniedMedia = retryDeniedMedia
         loadPage = pageLoader ?? { try await Beimi().page($0) }
         local = LocalLibrary(defaults: defaults)
         favorites = local.data.favorites
@@ -127,6 +140,11 @@ final class Library: ObservableObject {
         load(Beimi.searchURL(term))
     }
 
+    func clearSearch() {
+        query = ""
+        if !searchTerm.isEmpty { navigate(section) }
+    }
+
     func load(_ url: URL? = nil) {
         let url = url ?? currentURL
         catalogTask?.cancel()
@@ -174,11 +192,12 @@ final class Library: ObservableObject {
         load(URL(string: path, relativeTo: Beimi.base)!.absoluteURL)
     }
 
-    func select(_ movie: Movie, resume: Bool = false) {
+    func select(_ movie: Movie, resume: Bool = true) {
+        playbackFocusRequest = UUID()
         requiresManualPlayback = false
         if detail?.movie.id == movie.id {
             showDetail = true
-            if resume { resumeMovie() }
+            if resume && !isPlaying && !resolving { resumeMovie() }
             return
         }
         detailTask?.cancel(); stop()
@@ -202,12 +221,13 @@ final class Library: ObservableObject {
     func stop() {
         saveProgress()
         playTask?.cancel(); timeoutTask?.cancel(); playGeneration = UUID()
-        observation = nil
-        for observer in notificationObservers { NotificationCenter.default.removeObserver(observer) }
-        notificationObservers = []
+        clearItemObservers()
+        webResolver?.cancel(); webResolver = nil; webEvidence = ""
+        mediaRelay?.stop(); mediaRelay = nil; retriedMediaAccess = false
         player.pause(); player.replaceCurrentItem(with: nil)
         episode = nil; resolving = false; isPlaying = false; position = 0; duration = 0
         playbackFailed = false; playbackEnded = false
+        currentMediaURL = nil; playbackDiagnostics = nil; diagnosticsCopied = false
         playbackStatus = "选择剧集开始播放"
     }
 
@@ -217,63 +237,130 @@ final class Library: ObservableObject {
         let saved = history.first { $0.id == detail?.movie.id }
         let resume = start ?? PlaybackPolicy.resumePosition(saved, episode: selected)
         stop(); error = nil; episode = selected; selectedLine = selected.line; resolving = true
-        playbackStatus = "正在获取播放地址…"
+        requestedResume = resume
+        playbackStatus = "正在通过网页获取播放参数…"
         let generation = UUID(); playGeneration = generation
         playTask = Task {
             do {
-                let url = try await source.resolve(selected)
+                let resolver = WebPlaybackResolver(); webResolver = resolver
+                let url = try await resolver.resolve(selected.url)
+                webEvidence = resolver.evidence
+                webResolver = nil
                 guard !Task.isCancelled, playGeneration == generation else { return }
-                let item = AVPlayerItem(url: url)
-                observation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.playGeneration == generation else { return }
-                        if item.status == .readyToPlay {
-                            self.duration = item.duration.seconds.isFinite ? item.duration.seconds : 0
-                            if resume > 0 {
-                                let target = self.duration > 0 ? min(resume, max(0, self.duration - 5)) : resume
-                                _ = await self.player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: CMTime(seconds: 1, preferredTimescale: 600))
-                            }
-                            guard self.playGeneration == generation else { return }
-                            self.resolving = false; self.timeoutTask?.cancel()
-                            if !self.requiresManualPlayback { self.player.playImmediately(atRate: self.settings.rate) }
-                            self.saveProgress(); self.updatePlaybackStatus()
-                        } else if item.status == .failed { self.fail(item.error?.localizedDescription ?? "播放器无法打开此资源。") }
-                    }
-                }
-                notificationObservers.append(NotificationCenter.default.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] note in
-                    let message = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?.localizedDescription ?? "视频播放中断，请重试或选择其他线路。"
-                    Task { @MainActor [weak self] in
-                        guard let self, self.playGeneration == generation else { return }; self.fail(message)
-                    }
-                })
-                notificationObservers.append(NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.playGeneration == generation else { return }
-                        self.saveProgress(completed: true)
-                        if self.settings.autoNext, !self.requiresManualPlayback, let next = self.nextEpisode { self.play(next, from: 0) }
-                        else { self.playbackEnded = true; self.isPlaying = false; self.playbackStatus = "本集播放完毕" }
-                    }
-                })
-                player.replaceCurrentItem(with: item)
-                player.volume = settings.volume; player.isMuted = settings.muted
-                playbackStatus = "正在缓冲 · \(selected.title)"
-                if !requiresManualPlayback { player.playImmediately(atRate: settings.rate) }
-                timeoutTask = Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: 45_000_000_000)
-                    guard !Task.isCancelled, let self, self.playGeneration == generation, self.resolving else { return }
-                    self.fail("缓冲超过 45 秒，请重试或切换线路。")
-                }
+                currentMediaURL = url
+                if preferCompatibilityRelay && url.pathExtension.lowercased() == "m3u8" { retryMediaAccess(url, episode: selected) }
+                else { installItem(url, selected: selected, resume: resume, generation: generation) }
             } catch {
                 guard !Task.isCancelled, playGeneration == generation else { return }
-                fail(error.localizedDescription)
+                fail(error.localizedDescription, underlying: error)
             }
         }
     }
 
-    private func fail(_ message: String) {
+    private func installItem(_ url: URL, selected: Episode, resume: Double, generation: UUID) {
+        let item = AVPlayerItem(asset: PlaybackNetworking.asset(url))
+        observation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.playGeneration == generation, self.player.currentItem === item else { return }
+                if item.status == .readyToPlay {
+                    self.duration = item.duration.seconds.isFinite ? item.duration.seconds : 0
+                    if resume > 0 {
+                        let target = self.duration > 0 ? min(resume, max(0, self.duration - 5)) : resume
+                        _ = await self.player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: CMTime(seconds: 1, preferredTimescale: 600))
+                    }
+                    guard self.playGeneration == generation, self.player.currentItem === item else { return }
+                    self.resolving = false; self.timeoutTask?.cancel()
+                    if !self.requiresManualPlayback { self.player.playImmediately(atRate: self.settings.rate) }
+                    self.saveProgress(); self.updatePlaybackStatus()
+                } else if item.status == .failed { self.fail(item.error?.localizedDescription ?? "播放器无法打开此资源。", underlying: item.error) }
+            }
+        }
+        notificationObservers.append(NotificationCenter.default.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] note in
+            let underlying = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+            let message = underlying?.localizedDescription ?? "视频播放中断，请重试或选择其他线路。"
+            Task { @MainActor [weak self] in
+                guard let self, self.playGeneration == generation, self.player.currentItem === item else { return }; self.fail(message, underlying: underlying)
+            }
+        })
+        notificationObservers.append(NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.playGeneration == generation, self.player.currentItem === item else { return }
+                self.saveProgress(completed: true)
+                if self.settings.autoNext, !self.requiresManualPlayback, let next = self.nextEpisode { self.play(next, from: 0) }
+                else { self.playbackEnded = true; self.isPlaying = false; self.playbackStatus = "本集播放完毕" }
+            }
+        })
+        notificationObservers.append(NotificationCenter.default.addObserver(forName: .AVPlayerItemNewErrorLogEntry, object: item, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.playGeneration == generation, self.player.currentItem === item, self.playbackFailed else { return }
+                self.fail(self.error ?? "视频加载失败。", underlying: self.player.currentItem?.error)
+            }
+        })
+        player.replaceCurrentItem(with: item)
+        player.volume = settings.volume; player.isMuted = settings.muted
+        playbackStatus = "正在缓冲 · \(selected.title)"
+        if !requiresManualPlayback { player.playImmediately(atRate: settings.rate) }
+        timeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 45_000_000_000)
+            guard !Task.isCancelled, let self, self.playGeneration == generation, self.resolving else { return }
+            self.fail("缓冲超过 45 秒，请重试或切换线路。")
+        }
+    }
+
+    private func fail(_ message: String, underlying: Error? = nil) {
+        let actualError = underlying ?? player.currentItem?.error
+        var events = player.currentItem?.errorLog()?.events.map { (status: $0.errorStatusCode, uri: $0.uri) } ?? []
+        if retryDeniedMedia, !retriedMediaAccess, let url = currentMediaURL, url.pathExtension.lowercased() == "m3u8",
+           let episode, PlaybackIssue.isAccessDenied(actualError, statuses: events.map(\.status)) {
+            retryMediaAccess(url, episode: episode)
+            return
+        }
         playbackFailed = true
         resolving = false; isPlaying = false; timeoutTask?.cancel(); player.pause()
-        playbackStatus = "播放失败"; error = message
+        let trace = mediaRelay?.events.map { "兼容请求：\($0.kind) / \($0.status) / \($0.host)" } ?? []
+        events.append(contentsOf: mediaRelay?.events.map { (status: $0.status, uri: "https://" + $0.host) } ?? [])
+        var diagnosticTrace = [webEvidence].filter { !$0.isEmpty } + trace
+        if let relayError = mediaRelay?.lastError as NSError? { diagnosticTrace.append("兼容错误：\(relayError.domain) / \(relayError.code)") }
+        let issue = PlaybackIssue(error: actualError, fallback: message, mediaURL: currentMediaURL, events: events,
+                                  transport: retriedMediaAccess ? "WebView 参数 + HLS 兼容重试，无 Referer" : "WebView 参数 + 原生播放，无 Referer", trace: diagnosticTrace)
+        playbackStatus = "播放失败"; error = issue.message
+        playbackDiagnostics = issue.diagnostics; diagnosticsCopied = false
+        mediaRelay?.stop()
+    }
+
+    private func clearItemObservers() {
+        observation = nil
+        for observer in notificationObservers { NotificationCenter.default.removeObserver(observer) }
+        notificationObservers = []
+    }
+
+    private func retryMediaAccess(_ url: URL, episode: Episode) {
+        retriedMediaAccess = true
+        let time = player.currentTime().seconds
+        let resume = time.isFinite && time > 0 ? time : requestedResume
+        let generation = playGeneration
+        timeoutTask?.cancel(); playTask?.cancel(); clearItemObservers(); player.pause()
+        player.replaceCurrentItem(with: nil)
+        playbackFailed = false; isPlaying = false; resolving = true; error = nil
+        playbackStatus = "正在重试兼容播放…"
+        let relay = HLSRelay(root: url); mediaRelay = relay
+        playTask = Task {
+            do {
+                let localURL = try await relay.start()
+                guard !Task.isCancelled, playGeneration == generation else { relay.stop(); return }
+                installItem(localURL, selected: episode, resume: resume, generation: generation)
+            } catch {
+                guard !Task.isCancelled, playGeneration == generation else { return }
+                fail("兼容播放请求失败，请复制诊断反馈。", underlying: error)
+            }
+        }
+    }
+
+    func copyPlaybackDiagnostics() {
+        guard let playbackDiagnostics else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(playbackDiagnostics, forType: .string)
+        diagnosticsCopied = true
     }
 
     func resumeMovie() {

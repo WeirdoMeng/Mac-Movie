@@ -27,7 +27,8 @@ struct WindowPlayerView: View {
     @ObservedObject var desktop: DesktopController
     @State private var hovered = false
     var body: some View {
-        ZStack {
+        ZStack(alignment: .bottom) {
+          ZStack {
             NativePlayer(player: model.player, windowFill: { desktop.perform(.windowFill) })
             if model.episode == nil {
                 VStack(spacing: 12) {
@@ -51,17 +52,28 @@ struct WindowPlayerView: View {
                         Button("系统全屏") { desktop.perform(.systemFullScreen) }
                     } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).frame(width: 22).help("窗口选项")
                 }.padding(9).background(.black.opacity(0.55))
-                    .opacity(hovered || model.episode == nil ? 1 : 0)
-                    .allowsHitTesting(hovered || model.episode == nil)
+                    .opacity(hovered ? 1 : 0)
+                    .allowsHitTesting(hovered)
                 Spacer()
                 if let error = model.error {
                     HStack {
                         Text(error).font(.caption).lineLimit(3)
                         Button("重试") { model.retry() }
+                        if model.playbackDiagnostics != nil {
+                            Button { model.copyPlaybackDiagnostics() } label: { Image(systemName: model.diagnosticsCopied ? "checkmark" : "doc.on.clipboard") }.help("复制播放诊断").accessibilityLabel("复制播放诊断")
+                        }
                     }.padding(10).background(.black.opacity(0.75))
                 }
             }.foregroundStyle(.white)
-        }.background(.black).onHover { hovered = $0 }
+          }.aspectRatio(16 / 9, contentMode: .fit)
+          PlaybackControls(model: model, desktop: desktop, compact: true, windowMode: true)
+              .padding(12).background(.black.opacity(0.55))
+              .opacity(hovered ? 1 : 0)
+              .allowsHitTesting(hovered)
+        }.fixedSize(horizontal: false, vertical: true)
+          .background(.black)
+          .contentShape(Rectangle())
+          .onHover { hovered = $0 }
             .contextMenu {
                 Button("返回浏览") { desktop.browse() }
                 Button("设置") { desktop.showSettings = true }
@@ -95,7 +107,7 @@ struct AppPreferencesView: View {
             }
             Section("观看方式") {
                 Toggle("窗口全屏：视频铺满当前窗口", isOn: $desktop.windowFill)
-                Text("窗口全屏保留窗口的位置与尺寸，不切换桌面。Esc 可退出；系统全屏可从“窗口”菜单单独开启。").font(.caption).foregroundStyle(.secondary)
+                Text("窗口全屏保持宽度，按视频比例调整高度，工具栏浮在画面上；退出时恢复之前的高度，不切换桌面。Esc 可退出；系统全屏可从“窗口”菜单单独开启。").font(.caption).foregroundStyle(.secondary)
             }
             Section("自由调整大小") {
                 HStack {
@@ -107,9 +119,9 @@ struct AppPreferencesView: View {
             }
             Section("显隐") {
                 Text("\(desktop.shortcuts.shortcut(.visibility)?.display ?? "未设置") · \(desktop.shortcuts.globalStatus)")
-                Text("显隐热键在其他应用中也有效；隐藏不会停止当前播放。隐藏后也可点击 Dock 图标找回窗口。").font(.caption).foregroundStyle(.secondary)
+                Text("显隐热键在其他应用中也有效；隐藏会自动暂停并保存进度，再次显示后需手动播放。隐藏后也可点击 Dock 图标找回窗口。").font(.caption).foregroundStyle(.secondary)
             }
-        }.formStyle(.grouped)
+        }.formStyle(.grouped).background(HiddenScrollIndicators())
     }
 }
 
@@ -128,6 +140,7 @@ struct ShortcutSettingsView: View {
                             Spacer()
                             Button(manager.recording == action ? "按下组合键…" : manager.shortcut(action)?.display ?? "未设置") { manager.beginRecording(action) }
                                 .frame(width: 180).accessibilityLabel("设置\(action.title)快捷键")
+                                .accessibilityValue(manager.recording == action ? "正在录制" : manager.shortcut(action)?.display ?? "未设置")
                             Button { _ = manager.set(nil, for: action) } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain).accessibilityLabel("清除\(action.title)快捷键")
                         }.padding(.vertical, 9)
                         Divider()

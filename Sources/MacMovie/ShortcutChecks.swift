@@ -61,14 +61,15 @@ enum ShortcutChecks {
         window.contentView = host
         defer { desktop.shortcuts.stop(); window.orderOut(nil); defaults.removePersistentDomain(forName: suite) }
         desktop.attach(window, library: library)
+        window.orderFront(nil)
         try check(window.resizeIncrements == NSSize(width: 1, height: 1) && window.contentResizeIncrements == NSSize(width: 1, height: 1), "自由缩放使用有效增量，不设置零宽高比")
         try check(desktop.shortcuts.globalStatus.hasPrefix("已生效"), "Carbon 全局热键注册")
         let original = window.frame
         desktop.perform(.windowFill)
         try await Task.sleep(nanoseconds: 150_000_000)
-        try check(desktop.windowFill && window.frame == original && !window.styleMask.contains(.fullScreen), "窗口全屏不改变窗口或进入系统全屏")
+        try check(desktop.windowFill && window.frame.width == original.width && !window.styleMask.contains(.fullScreen), "窗口全屏保持宽度且不进入系统全屏")
         desktop.perform(.windowFill)
-        try check(!desktop.windowFill && window.frame == original, "退出窗口全屏保留尺寸")
+        try check(!desktop.windowFill && window.frame == original, "退出窗口全屏恢复之前高度")
         desktop.preferences.borderless = true
         try check(!window.styleMask.contains(.titled) && window.styleMask.contains(.resizable), "无边框保留自由缩放")
         try check(window.canBecomeKey && window.canBecomeMain && window.frame == original, "无边框仍可获得键盘焦点且不改变尺寸")
@@ -130,6 +131,22 @@ enum ShortcutChecks {
         try await Task.sleep(nanoseconds: 150_000_000)
         host.layoutSubtreeIfNeeded()
         try check(window.frame.size == NSSize(width: 299, height: 531) && host.bounds.size == window.frame.size, "默认尺寸使用用户当前无边框窗口的 299×531 点")
+        let compactFrame = window.frame
+        desktop.perform(.windowFill)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        print("WINDOW fit: before=\(compactFrame), after=\(window.frame), content=\(host.bounds)")
+        try check(window.frame.width == compactFrame.width && window.frame.height == ceil(compactFrame.width * 9 / 16),
+                  "小窗口全屏只按视频比例调整高度，工具栏不占额外空间")
+        try check(abs(window.frame.maxY - compactFrame.maxY) < 1, "调整高度保持窗口顶部位置")
+        let fitted = window.frame
+        desktop.fitWindowPlayer(contentHeight: host.bounds.height)
+        try check(window.frame == fitted, "相同布局高度不会反复调整窗口")
+        desktop.windowFill = false
+        try await Task.sleep(nanoseconds: 150_000_000)
+        host.layoutSubtreeIfNeeded()
+        try check(window.frame == compactFrame, "退出小窗口全屏准确恢复原高度和位置")
         func scrollViews(in view: NSView) -> [NSScrollView] {
             (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews(in: $0) }
         }
@@ -149,6 +166,39 @@ enum ShortcutChecks {
             try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
             try bitmap.representation(using: .png, properties: [:])?.write(to: destination)
         }
+        library.section = BrowseSection.all.first { $0.id == "2" }!
+        library.page.filters = (0..<6).map { index in
+            FilterGroup(title: "筛选\(index)", options: [PageLink(title: "全部", url: URL(string: "https://example.com/filter/\(index)")!, selected: true)])
+        }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        host.layoutSubtreeIfNeeded()
+        let horizontalRows = scrollViews(in: host).compactMap { $0 as? MouseWheelScrollView }
+        try check(horizontalRows.count == 2, "分类与筛选栏均使用鼠标滚轮横向滚动")
+        if let filters = horizontalRows.last,
+           let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: -3, wheel2: 0, wheel3: 0).flatMap({ NSEvent(cgEvent: $0) }) {
+            filters.scrollWheel(with: event)
+            try check(filters.contentView.bounds.minX > 0, "筛选栏普通鼠标滚轮实际移动内容")
+        } else { try check(false, "准备筛选栏鼠标事件") }
+        let settingsHost = NSHostingView(rootView: SettingsView(model: library).preferredColorScheme(.dark))
+        settingsHost.sizingOptions = []
+        window.contentView = settingsHost
+        window.setContentSize(NSSize(width: 460, height: 430))
+        try await Task.sleep(nanoseconds: 250_000_000)
+        settingsHost.layoutSubtreeIfNeeded()
+        let settingsScrolls = scrollViews(in: settingsHost)
+        try check(!settingsScrolls.isEmpty && settingsScrolls.allSatisfy { !$0.hasVerticalScroller && !$0.hasHorizontalScroller }, "设置 Form 保持滚动且隐藏原生滚动条")
+        library.showDetail = false
+        library.section = BrowseSection.all[0]
+        library.page.filters = []
+        window.contentView = host
+        window.setFrame(NSRect(origin: window.frame.origin, size: DesktopController.defaultWindowSize), display: false)
+        window.makeKeyAndOrderFront(nil)
+        desktop.focusSearch = UUID()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try check(window.firstResponder is NSTextView, "搜索命令可以将焦点放入输入框")
+        library.select(library.detail!.movie, resume: false)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        try check(!(window.firstResponder is NSTextView), "选片后移出输入焦点，恢复播放器快捷键")
         print("PASS: \(count) real AppKit window and Carbon registration checks")
         try await InteractionChecks.run()
     }

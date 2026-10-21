@@ -48,6 +48,18 @@ enum InteractionChecks {
         try await Task.sleep(nanoseconds: 60_000_000)
         try check(model.movies.map(\.id) == ["reset"] && model.page.next == nil, "切换目录后丢弃旧追加结果")
         try check(Theme.branded("北觅影视 · 北觅") == "摸鱼视界 · 摸鱼视界", "动态字段统一应用名称")
-        print("PASS: 7 infinite-scroll and branding checks")
+        model.navigate(BrowseSection.all.first { $0.id == "favorites" }!)
+        model.query = "尚未提交"
+        let requestCount = requests.values.reduce(0, +)
+        model.clearSearch()
+        try check(model.query.isEmpty && model.searchTerm.isEmpty && requests.values.reduce(0, +) == requestCount,
+                  "清空未提交输入不触发额外请求")
+        model.section = BrowseSection.all[0]
+        model.query = "搜索测试"; model.search(); model.clearSearch()
+        try await settled(model)
+        try await Task.sleep(nanoseconds: 60_000_000)
+        try check(model.query.isEmpty && model.searchTerm.isEmpty && model.currentURL.path == "/" && model.movies.first?.id == "reset",
+                  "清空已提交搜索返回片库并拒绝旧搜索结果")
+        print("PASS: 9 infinite-scroll, search-reset and branding checks")
     }
 }

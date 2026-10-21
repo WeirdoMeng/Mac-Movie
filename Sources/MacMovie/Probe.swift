@@ -47,13 +47,14 @@ enum Probe {
         print("PASS: live catalog, filters, pagination, search, latest and total/month/week rankings")
     }
 
-    @MainActor static func run() async throws {
+    @MainActor static func run(useRelay: Bool = false, retryDeniedMedia: Bool = true) async throws {
         let suite = "local.macmovie.probe." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         let store = LocalLibrary(defaults: defaults)
         var saved = SavedLibrary(); saved.settings.muted = true
         try store.save(saved)
-        let model = Library(defaults: defaults)
+        let model = Library(defaults: defaults, preferCompatibilityRelay: useRelay, retryDeniedMedia: retryDeniedMedia)
+        print("PROBE compatibility retry: \(retryDeniedMedia ? "enabled" : "disabled (direct only)")")
         defer { model.stop(); defaults.removePersistentDomain(forName: suite) }
         let movies = try await Beimi().catalog(query: "嫁金钗")
         guard let movie = movies.first(where: { $0.id == "1252" }) else { throw SourceError.invalid("搜索样本未找到") }
@@ -61,6 +62,9 @@ enum Probe {
         try await wait("加载详情", model: model) { model.detail != nil && !model.detailLoading }
         guard let episode = model.detail?.episodes.first else { throw SourceError.invalid("样本没有剧集") }
         print("PROBE detail: \(movie.title), episodes=\(model.detail!.episodes.count), lines=\(model.detail!.lines)")
+        try await wait("打开无历史影片自动播放", model: model) { model.isPlaying && !model.resolving }
+        try require(model.episode?.id == episode.id && model.player.currentTime().seconds < 10, "无历史时没有从第一集开头自动播放")
+        print("PROBE opening movie auto-plays first episode from start PASS")
         model.toggleFavorite(movie)
         try require(LocalLibrary(defaults: defaults).data.favorites.contains(where: { $0.id == movie.id }), "收藏保存失败")
         model.play(episode, from: 30)
@@ -73,6 +77,7 @@ enum Probe {
         try require(!model.isPlaying && model.player.rate == 0, "加载期间隐藏后仍自动播放")
         model.togglePlayback()
         try await wait("开始播放并定位到 30 秒", model: model) { !model.resolving && model.isPlaying && model.position >= 30 }
+        print("PROBE \(model.webEvidence)")
         print("PROBE playing: duration=\(model.duration), position=\(model.position)")
         model.pauseForHiding()
         let hiddenPosition = model.player.currentTime().seconds
@@ -89,7 +94,7 @@ enum Probe {
         let record = LocalLibrary(defaults: defaults).data.history.first
         try require(record?.episode.id == episode.id && (record?.position ?? 0) >= 85, "暂停后历史进度未保存")
         let position = record!.position
-        model.stop(); model.resumeMovie()
+        model.stop(); model.select(movie)
         try await wait("续播", model: model) { !model.resolving && model.isPlaying && model.player.currentTime().seconds >= position - 2 }
         model.settings.rate = 1.5; model.updateSettings()
         try await wait("倍速", seconds: 10, model: model) { abs(model.player.rate - 1.5) < 0.01 }
