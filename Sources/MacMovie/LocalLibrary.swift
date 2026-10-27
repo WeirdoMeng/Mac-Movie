@@ -50,6 +50,11 @@ final class LocalLibrary {
 }
 
 enum PlaybackPolicy {
+    static func preferredEpisode(in detail: MovieDetail) -> Episode? {
+        let preferredLine = detail.lines.first { $0.value.contains("极清蓝光") }?.key
+        return detail.episodes.first { $0.line == preferredLine } ?? detail.episodes.first
+    }
+
     static func ordered(_ episodes: [Episode], line: String) -> [Episode] {
         episodes.filter { $0.line == line }.sorted {
             $0.id.localizedStandardCompare($1.id) == .orderedAscending
@@ -87,17 +92,15 @@ struct BrowseSection: Identifiable, Hashable {
     let path: String?
 
     static let all: [BrowseSection] = [
-        .init(id: "home", title: "发现", icon: "sparkles", path: "/"),
-        .init(id: "latest", title: "最近更新", icon: "clock.arrow.circlepath", path: "/map/"),
-        .init(id: "rank", title: "排行榜", icon: "chart.bar.fill", path: "/label/rank/"),
+        .init(id: "home", title: "发现", icon: "sparkles", path: "/index/home.html"),
+        .init(id: "latest", title: "最近更新", icon: "clock.arrow.circlepath", path: "/label/new.html"),
+        .init(id: "rank", title: "排行榜", icon: "chart.bar.fill", path: "/label/hot.html"),
         .init(id: "favorites", title: "我的收藏", icon: "heart", path: nil),
         .init(id: "history", title: "观看历史", icon: "clock", path: nil),
         .init(id: "1", title: "电影", icon: "film", path: "/vodshow/1-----------.html"),
         .init(id: "2", title: "连续剧", icon: "tv", path: "/vodshow/2-----------.html"),
-        .init(id: "3", title: "综艺", icon: "mic", path: "/vodshow/3-----------.html"),
+        .init(id: "3", title: "综艺纪录", icon: "mic", path: "/vodshow/3-----------.html"),
         .init(id: "4", title: "动漫", icon: "play.square", path: "/vodshow/4-----------.html"),
-        .init(id: "20", title: "纪录片", icon: "globe.asia.australia", path: "/vodshow/20-----------.html"),
-        .init(id: "35", title: "动画片", icon: "wand.and.stars", path: "/vodshow/35-----------.html"),
-        .init(id: "21", title: "短剧", icon: "rectangle.stack", path: "/vodshow/21-----------.html")
+        .init(id: "125", title: "短剧", icon: "rectangle.stack", path: "/vodshow/125-----------.html")
     ]
 }

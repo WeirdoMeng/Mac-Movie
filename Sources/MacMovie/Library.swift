@@ -59,6 +59,8 @@ final class Library: ObservableObject {
     private var webResolver: WebPlaybackResolver?
     private(set) var webEvidence = ""
     private var retriedMediaAccess = false
+    private var retriedCoreMedia15628 = false
+    private var recoveryTrace: String?
     private var requestedResume: Double = 0
     private var requiresManualPlayback = false
     private var detailMovie: Movie?
@@ -115,8 +117,15 @@ final class Library: ObservableObject {
     var movies: [Movie] {
         if searchTerm.isEmpty && section.id == "favorites" { return favorites }
         if searchTerm.isEmpty && section.id == "history" { return history.map(\.movie) }
-        if section.id == "rank", page.rankSections.indices.contains(rankSection) { return page.rankSections[rankSection].1 }
+        if section.id == "rank", visibleRankSections.indices.contains(rankSection) { return visibleRankSections[rankSection].1 }
         return page.movies
+    }
+    var visibleRankSections: [(String, [Movie])] {
+        page.rankSections.compactMap { section in
+            let suffix = "·\(rankPeriod)"
+            guard section.0.hasSuffix(suffix) else { return nil }
+            return (String(section.0.dropLast(suffix.count)), section.1)
+        }
     }
     var title: String { searchTerm.isEmpty ? section.title : "“\(searchTerm)”的搜索结果" }
     var nextEpisode: Episode? { episode.flatMap { PlaybackPolicy.adjacent(to: $0, in: detail?.episodes ?? [], offset: 1) } }
@@ -188,8 +197,7 @@ final class Library: ObservableObject {
 
     func setRankPeriod(_ title: String) {
         rankPeriod = title
-        let path = title == "月榜" ? "/label/rankmonth.html" : title == "周榜" ? "/label/rankweek.html" : "/label/rank/"
-        load(URL(string: path, relativeTo: Beimi.base)!.absoluteURL)
+        rankSection = 0
     }
 
     func select(_ movie: Movie, resume: Bool = true) {
@@ -208,7 +216,20 @@ final class Library: ObservableObject {
             do {
                 let result = try await source.detail(movie)
                 guard !Task.isCancelled, detailGeneration == generation else { return }
-                detail = result; selectedLine = result.episodes.first?.line ?? ""
+                detail = result; selectedLine = PlaybackPolicy.preferredEpisode(in: result)?.line ?? ""
+                if result.movie.poster != nil {
+                    var changed = false
+                    if let index = favorites.firstIndex(where: { $0.id == result.movie.id && $0.poster == nil }) {
+                        favorites[index] = result.movie; changed = true
+                    }
+                    if let index = history.firstIndex(where: { $0.id == result.movie.id && $0.movie.poster == nil }) {
+                        let record = history[index]
+                        history[index] = WatchRecord(movie: result.movie, episode: record.episode,
+                                                     position: record.position, duration: record.duration, updatedAt: record.updatedAt)
+                        changed = true
+                    }
+                    if changed { persist() }
+                }
                 if resume && !requiresManualPlayback { resumeMovie() }
             } catch {
                 guard !Task.isCancelled, detailGeneration == generation else { return }
@@ -224,6 +245,7 @@ final class Library: ObservableObject {
         clearItemObservers()
         webResolver?.cancel(); webResolver = nil; webEvidence = ""
         mediaRelay?.stop(); mediaRelay = nil; retriedMediaAccess = false
+        retriedCoreMedia15628 = false; recoveryTrace = nil
         player.pause(); player.replaceCurrentItem(with: nil)
         episode = nil; resolving = false; isPlaying = false; position = 0; duration = 0
         playbackFailed = false; playbackEnded = false
@@ -315,11 +337,23 @@ final class Library: ObservableObject {
             retryMediaAccess(url, episode: episode)
             return
         }
+        if !retriedCoreMedia15628, !requiresManualPlayback, let url = currentMediaURL,
+           url.pathExtension.lowercased() == "m3u8", let episode,
+           !events.contains(where: { (400...499).contains($0.status) }),
+           PlaybackIssue.isCoreMedia15628(actualError) {
+            let time = player.currentTime().seconds
+            let resume = time.isFinite && time > 0 ? time : (position > 0 ? position : requestedResume)
+            play(episode, from: resume)
+            retriedCoreMedia15628 = true
+            recoveryTrace = "自动恢复：重新获取播放参数一次；位置：\(Int(resume)) 秒；错误：CoreMediaErrorDomain / -15628"
+            playbackStatus = "正在自动重试 · \(episode.title)"
+            return
+        }
         playbackFailed = true
         resolving = false; isPlaying = false; timeoutTask?.cancel(); player.pause()
         let trace = mediaRelay?.events.map { "兼容请求：\($0.kind) / \($0.status) / \($0.host)" } ?? []
         events.append(contentsOf: mediaRelay?.events.map { (status: $0.status, uri: "https://" + $0.host) } ?? [])
-        var diagnosticTrace = [webEvidence].filter { !$0.isEmpty } + trace
+        var diagnosticTrace = [webEvidence, recoveryTrace].compactMap { $0 }.filter { !$0.isEmpty } + trace
         if let relayError = mediaRelay?.lastError as NSError? { diagnosticTrace.append("兼容错误：\(relayError.domain) / \(relayError.code)") }
         let issue = PlaybackIssue(error: actualError, fallback: message, mediaURL: currentMediaURL, events: events,
                                   transport: retriedMediaAccess ? "WebView 参数 + HLS 兼容重试，无 Referer" : "WebView 参数 + 原生播放，无 Referer", trace: diagnosticTrace)
@@ -366,7 +400,7 @@ final class Library: ObservableObject {
     func resumeMovie() {
         guard let detail else { return }
         let saved = history.first { $0.id == detail.movie.id }
-        let target = detail.episodes.first { $0.id == saved?.episode.id } ?? detail.episodes.first
+        let target = detail.episodes.first { $0.id == saved?.episode.id } ?? PlaybackPolicy.preferredEpisode(in: detail)
         if let target { play(target) }
     }
 
@@ -390,10 +424,14 @@ final class Library: ObservableObject {
 
     func togglePlayback() {
         guard episode != nil, !resolving else { return }
-        requiresManualPlayback = false
         if playbackEnded, let episode { play(episode, from: 0); return }
-        if player.timeControlStatus == .paused { player.playImmediately(atRate: settings.rate) }
-        else { player.pause(); saveProgress() }
+        if player.timeControlStatus == .paused {
+            requiresManualPlayback = false
+            player.playImmediately(atRate: settings.rate)
+        } else {
+            requiresManualPlayback = true
+            player.pause(); saveProgress()
+        }
     }
 
     func seek(to seconds: Double) {

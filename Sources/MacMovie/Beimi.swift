@@ -84,13 +84,19 @@ enum HTML {
 }
 
 struct Beimi {
-    static let base = URL(string: "https://v.luttt.com")!
+    static let base = URL(string: "https://www.5dy17.top")!
 
     func fetch(_ url: URL) async throws -> String {
+        guard Self.internalURL(url.absoluteString) == url else {
+            throw SourceError.invalid("只支持读取摸鱼视界当前片库页面。")
+        }
         let request = PlaybackNetworking.request(url)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let response = response as? HTTPURLResponse else {
             throw SourceError.invalid("站点请求失败，请稍后重试。")
+        }
+        guard response.url?.host == Self.base.host else {
+            throw SourceError.invalid("站点跳转到未知地址，已停止读取。")
         }
         guard response.statusCode == 200 else { throw PlaybackNetworking.httpError(response) }
         guard data.count < 5_000_000, let html = String(data: data, encoding: .utf8) else {
@@ -107,13 +113,9 @@ struct Beimi {
     }
 
     static func searchURL(_ query: String) -> URL {
-        var url = Self.base
-        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            var parts = URLComponents(url: Self.base.appendingPathComponent("vodsearch/-------------.html"), resolvingAgainstBaseURL: false)!
-            parts.queryItems = [URLQueryItem(name: "wd", value: query)]
-            url = parts.url!
-        }
-        return url
+        let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyword.isEmpty else { return Self.base }
+        return Self.base.appendingPathComponent("vodsearch").appendingPathComponent("\(keyword)-------------.html")
     }
 
     func page(_ url: URL) async throws -> CatalogPage {
@@ -122,40 +124,36 @@ struct Beimi {
 
     static func internalURL(_ href: String) -> URL? {
         guard let url = URL(string: HTML.clean(href), relativeTo: base)?.absoluteURL,
-              url.scheme == "https", url.host == base.host else { return nil }
+              url.scheme == "https", url.host == base.host, url.port == nil,
+              url.user == nil, url.password == nil else { return nil }
         return url
     }
 
     static func parsePage(_ html: String, url: URL) -> CatalogPage {
         var page = CatalogPage(movies: movies(html))
-        for group in HTML.matches("<div[^>]*class=[\"'][^\"']*hl-filter-wrap[^\"']*[\"'][^>]*>(.*?)<ul[^>]*>(.*?)</ul>", html) {
-            let name = HTML.clean(HTML.first("<span[^>]*>(.*?)</span>", group[1]))
-            guard !name.isEmpty, name != "已选" else { continue }
+        let filterPattern = #"<div\b[^>]*class=["'][^"']*module-class-item[^"']*["'][^>]*>\s*<div\b[^>]*class=["'][^"']*module-item-title[^"']*["'][^>]*>(.*?)</div>\s*<div\b[^>]*class=["'][^"']*module-item-box[^"']*["'][^>]*>(.*?)</div>"#
+        for group in HTML.matches(filterPattern, html) {
+            let name = HTML.clean(group[1])
+            guard !name.isEmpty else { continue }
             let options = links(group[2], current: url)
             if !options.isEmpty { page.filters.append(FilterGroup(title: name, options: options)) }
         }
-        let sort = HTML.matches("<a\\b[^>]*href=[\"']([^\"']*vodshow[^\"']*)[\"'][^>]*>(按[^<]+)</a>", html).compactMap { m -> PageLink? in
-            guard let link = internalURL(m[1]) else { return nil }
-            return PageLink(title: HTML.clean(m[2]), url: link, selected: HTML.attribute("class", m[0]).contains("active"))
-        }
-        if !sort.isEmpty { page.filters.append(FilterGroup(title: "排序", options: sort)) }
-        let pagination = HTML.first("<ul[^>]*class=[\"'][^\"']*hl-page-wrap[^\"']*[\"'][^>]*>(.*?)</ul>", html)
-        let counts = HTML.matches("([0-9]+)\\s*/\\s*([0-9]+)", HTML.clean(pagination)).first
-        if let counts { page.pageNumber = Int(counts[1]) ?? 1; page.pageCount = Int(counts[2]) ?? 1 }
-        for link in HTML.matches("<a\\b([^>]*)>(.*?)</a>", pagination) {
-            guard !HTML.attribute("class", link[0]).contains("hl-disad"),
-                  let target = internalURL(HTML.attribute("href", link[0])) else { continue }
-            let title = HTML.clean(link[2])
+        let pagination = HTML.first(#"<div\b[^>]*id=["']page["'][^>]*>(.*?)</div>"#, html)
+        page.pageNumber = Int(HTML.first(#"<span\b[^>]*class=["'][^"']*page-current[^"']*["'][^>]*>\s*([0-9]+)\s*</span>"#, pagination)) ?? 1
+        for link in HTML.matches(#"<a\b[^>]*>(.*?)</a>"#, pagination) {
+            guard let target = internalURL(HTML.attribute("href", link[0])) else { continue }
+            let title = HTML.clean(link[1])
             if title == "上一页", page.pageNumber > 1 { page.previous = target }
-            if title == "下一页", page.pageNumber < page.pageCount { page.next = target }
-        }
-        page.total = Int(HTML.first("\\$\\(['\"]\\.hl-total['\"]\\)\\.html\\(['\"]([0-9]+)['\"]\\)", html))
-        if url.path.contains("rank") {
-            let tabs = HTML.matches("<a[^>]*class=[\"'][^\"']*hl-tabs-btn[^\"']*[\"'][^>]*>(.*?)</a>", html).map { HTML.clean($0[1]) }
-            let lists = HTML.matches("<ul[^>]*class=[\"'][^\"']*hl-rank-list[^\"']*[\"'][^>]*>(.*?)</ul>", html)
-            for (index, list) in lists.enumerated() where index < tabs.count {
-                page.rankSections.append((tabs[index], movies(list[1])))
+            if title == "下一页" { page.next = target }
+            if title == "尾页" {
+                page.pageCount = Int(HTML.first(#"-([0-9]+)---\.html"#, target.path)) ?? page.pageCount
+            } else if let number = Int(title) {
+                page.pageCount = max(page.pageCount, number)
             }
+        }
+        page.total = Int(HTML.first(#"找到\s*([0-9]+)\s*部"#, html))
+        if url.path == "/label/hot.html" {
+            page.rankSections = rankingSections(html)
             if let first = page.rankSections.first { page.movies = first.1 }
         }
         return page
@@ -172,61 +170,99 @@ struct Beimi {
 
     static func movies(_ html: String) -> [Movie] {
         var seen = Set<String>()
-        let cards = HTML.matches("<li\\b[^>]*class=[\"'][^\"']*hl-list-item[^\"']*[\"'][^>]*>(.*?)</li>", html)
-        if !cards.isEmpty {
-            return cards.compactMap { card in
-                let body = card[1]
-                guard let anchor = HTML.matches("<a\\b[^>]*href=[\"'][^\"']*/voddetail/[0-9]+\\.html[\"'][^>]*>", body).first?.first else { return nil }
-                let id = HTML.first("/voddetail/([0-9]+)\\.html", anchor)
-                let title = HTML.clean(HTML.attribute("title", anchor))
-                guard !title.isEmpty, seen.insert(id).inserted else { return nil }
-                let poster = HTML.first("data-original=[\"']([^\"']+)[\"']", body)
-                var remark = HTML.clean(HTML.first("<span[^>]*class=[\"'][^\"']*remarks[^\"']*[\"'][^>]*>(.*?)</span>", body))
-                if remark.isEmpty {
-                    remark = HTML.clean(HTML.first("<div[^>]*class=[\"']hl-item-remarks[\"'][^>]*>(.*?)</div>", body))
-                    if !remark.isEmpty { remark = remark.replacingOccurrences(of: "^[0-9.]+\\s*", with: "", options: .regularExpression) }
-                }
-                if remark.isEmpty { remark = HTML.clean(HTML.first("<span[^>]*class=[\"']hl-text-subs hl-hidden-xs[\"'][^>]*>(.*?)</span>", body)).trimmingCharacters(in: CharacterSet(charactersIn: " /")) }
-                let score = HTML.clean(HTML.first("<span[^>]*class=[\"'][^\"']*score[^\"']*[\"'][^>]*>(.*?)</span>", body))
-                return Movie(id: id, title: title, poster: poster.isEmpty ? nil : URL(string: poster, relativeTo: base)?.absoluteURL, remark: remark, score: score)
-            }
+        let posterCards = HTML.matches(#"<a\b[^>]*class=["'][^"']*module-poster-item[^"']*["'][^>]*>.*?</a>"#, html)
+        let posters = posterCards.compactMap { match -> Movie? in
+            let body = match[0]
+            let number = HTML.first(#"/voddetail/([0-9]+)\.html"#, HTML.attribute("href", body))
+            let title = HTML.clean(HTML.attribute("title", body))
+            guard !number.isEmpty, !title.isEmpty, seen.insert(number).inserted else { return nil }
+            let image = HTML.clean(HTML.attribute("data-original", body))
+            let remark = HTML.clean(HTML.first(#"<div\b[^>]*class=["'][^"']*module-item-note[^"']*["'][^>]*>(.*?)</div>"#, body))
+            let rating = HTML.clean(HTML.first(#"<div\b[^>]*class=["'][^"']*module-item-douban[^"']*["'][^>]*>(.*?)</div>"#, body))
+            return Movie(id: "5dy:\(number)", title: title,
+                         poster: image.isEmpty ? nil : URL(string: image, relativeTo: base)?.absoluteURL,
+                         remark: remark, score: HTML.first(#"([0-9]+(?:\.[0-9]+)?)"#, rating))
         }
-        return HTML.matches("(<a\\b[^>]*class=[\"'][^\"']*hl-item-thumb[^\"']*[\"'][^>]*>)(.*?)</a>", html).compactMap { match in
-            let tag = match[1]
-            let href = HTML.attribute("href", tag)
-            let id = HTML.first("/voddetail/([0-9]+)\\.html", href)
-            let title = HTML.clean(HTML.attribute("title", tag))
-            guard !id.isEmpty, !title.isEmpty, seen.insert(id).inserted else { return nil }
-            let poster = HTML.attribute("data-original", tag)
-            return Movie(id: id, title: title, poster: poster.isEmpty ? nil : URL(string: poster, relativeTo: base)?.absoluteURL,
-                         remark: HTML.clean(HTML.first("<span[^>]*class=[\"'][^\"']*remarks[^\"']*[\"'][^>]*>(.*?)</span>", match[2])))
+        if !posters.isEmpty { return posters }
+
+        let searchCards = HTML.matches(#"(<a\b[^>]*class=["'][^"']*module-card-item-poster[^"']*["'][^>]*>.*?</a>)(.*?)(?=<div\b[^>]*class=["'][^"']*module-card-item-footer)"#, html)
+        return searchCards.compactMap { match in
+            let number = HTML.first(#"/voddetail/([0-9]+)\.html"#, HTML.attribute("href", match[1]))
+            let highlightedTitle = HTML.first(#"<div\b[^>]*class=["'][^"']*module-card-item-title[^"']*["'][^>]*>(.*?)</div>"#, match[2])
+            let title = HTML.clean(highlightedTitle.replacingOccurrences(of: #"</?em\b[^>]*>"#, with: "", options: .regularExpression))
+            guard !number.isEmpty, !title.isEmpty, seen.insert(number).inserted else { return nil }
+            let image = HTML.clean(HTML.attribute("data-original", match[1]))
+            let remark = HTML.clean(HTML.first(#"<div\b[^>]*class=["'][^"']*module-item-note[^"']*["'][^>]*>(.*?)</div>"#, match[1]))
+            return Movie(id: "5dy:\(number)", title: title,
+                         poster: image.isEmpty ? nil : URL(string: image, relativeTo: base)?.absoluteURL,
+                         remark: remark)
         }
     }
 
+    private static func rankingSections(_ html: String) -> [(String, [Movie])] {
+        let pattern = #"<div\b[^>]*class=["'][^"']*module-paper-item module-item[^"']*["'][^>]*>(.*?)(?=<div\b[^>]*class=["'][^"']*module-paper-item module-item|$)"#
+        return HTML.matches(pattern, html).compactMap { section in
+            let rawTitle = HTML.clean(HTML.first(#"<h3\b[^>]*class=["'][^"']*module-paper-item-title[^"']*["'][^>]*>(.*?)</h3>"#, section[1]))
+            guard !rawTitle.isEmpty else { return nil }
+            let title = rawTitle.replacingOccurrences(of: #"(总榜|月榜|周榜|日榜)$"#, with: "·$1", options: .regularExpression)
+            var seen = Set<String>()
+            let entries = HTML.matches(#"<a\b[^>]*href=["'](/voddetail/([0-9]+)\.html)["'][^>]*>(.*?)</a>"#, section[1]).compactMap { match -> Movie? in
+                let number = match[2]
+                let name = HTML.clean(HTML.first(#"<span\b[^>]*class=["'][^"']*module-paper-item-infotitle[^"']*["'][^>]*>(.*?)</span>"#, match[3]))
+                guard !name.isEmpty, seen.insert(number).inserted else { return nil }
+                let remark = HTML.clean(HTML.first(#"<p\b[^>]*>(.*?)</p>"#, match[3]))
+                return Movie(id: "5dy:\(number)", title: name, poster: nil, remark: remark)
+            }
+            guard !entries.isEmpty else { return nil }
+            return (title, Array(entries.prefix(10)))
+        }
+    }
+
+    static func detailURL(_ movie: Movie) -> URL? {
+        let number = String(movie.id.dropFirst("5dy:".count))
+        guard movie.id.hasPrefix("5dy:"), !number.isEmpty,
+              number.unicodeScalars.allSatisfy(CharacterSet.decimalDigits.contains) else {
+            return nil
+        }
+        return Self.base.appendingPathComponent("voddetail/\(number).html")
+    }
+
     func detail(_ movie: Movie) async throws -> MovieDetail {
-        Self.parseDetail(try await fetch(Self.base.appendingPathComponent("voddetail/\(movie.id).html")), movie: movie)
+        guard let url = Self.detailURL(movie) else {
+            throw SourceError.invalid("这部影片属于旧片库，请在新片库重新搜索。")
+        }
+        return Self.parseDetail(try await fetch(url), movie: movie)
     }
 
     static func parseDetail(_ html: String, movie: Movie) -> MovieDetail {
         var seen = Set<String>()
-        let episodes: [Episode] = HTML.matches("<a\\b[^>]*href=[\"'](/vodplay/([0-9]+)-([0-9]+)-([0-9]+)\\.html)[\"'][^>]*>(.*?)</a>", html).compactMap { m in
+        var lineOrder: [String] = []
+        let posterAddress = HTML.clean(HTML.first(#"<div\b[^>]*class=["'][^"']*module-info-poster[^"']*["'][^>]*>.*?<img\b[^>]*data-original=["']([^"']+)["']"#, html))
+        let poster = posterAddress.isEmpty ? nil : URL(string: posterAddress, relativeTo: base)?.absoluteURL
+        let fullMovie = Movie(id: movie.id, title: movie.title, poster: movie.poster ?? poster,
+                              remark: movie.remark, score: movie.score)
+        let numericID = movie.id.hasPrefix("5dy:") ? String(movie.id.dropFirst("5dy:".count)) : ""
+        let episodePattern = #"<a\b[^>]*class=["'][^"']*module-play-list-link[^"']*["'][^>]*href=["'](/vodplay/([0-9]+)-([0-9]+)-([0-9]+)\.html)["'][^>]*>(.*?)</a>"#
+        let episodes: [Episode] = HTML.matches(episodePattern, html).compactMap { m in
             let title = HTML.clean(m[5])
-            guard m[2] == movie.id, !title.isEmpty,
-                  !["立即播放", "在线播放", "上一集", "下一集"].contains(title),
+            guard m[2] == numericID, !title.isEmpty,
                   seen.insert(m[1]).inserted else { return nil }
+            if !lineOrder.contains(m[3]) { lineOrder.append(m[3]) }
             return Episode(id: m[1], title: title, url: URL(string: m[1], relativeTo: base)!.absoluteURL, line: m[3])
         }
-        let metadata = ["年份", "地区", "类型", "语言", "导演", "主演"].compactMap { key -> String? in
-            let value = HTML.clean(HTML.first("<li\\b[^>]*>\\s*<em[^>]*>" + key + "：</em>(.*?)</li>", html))
+        let metadata = ["导演", "编剧", "主演", "上映", "更新", "集数"].compactMap { key -> String? in
+            let pattern = #"<span\b[^>]*class=["'][^"']*module-info-item-title[^"']*["'][^>]*>\s*"# + NSRegularExpression.escapedPattern(for: key) + #"：\s*</span>\s*<div\b[^>]*class=["'][^"']*module-info-item-content[^"']*["'][^>]*>(.*?)</div>"#
+            let value = HTML.clean(HTML.first(pattern, html)).trimmingCharacters(in: CharacterSet(charactersIn: " /"))
             return value.isEmpty ? nil : "\(key)：\(value)"
         }.joined(separator: "\n")
-        let summary = HTML.clean(HTML.first("<span[^>]*class=[\"']hl-content-text[\"'][^>]*>(.*?)</span>", html))
-        let lineBlock = HTML.first("<div[^>]*class=[\"'][^\"']*hl-plays-from[^\"']*[\"'][^>]*>(.*?)</div>", html)
-        let names = HTML.matches("<a\\b[^>]*>(.*?)</a>", lineBlock).map { HTML.clean($0[1]) }
+        let summary = HTML.clean(HTML.first(#"<div\b[^>]*class=["'][^"']*module-info-introduction-content[^"']*["'][^>]*>(.*?)</div>"#, html))
+        let names = HTML.matches(#"<div\b[^>]*class=["'][^"']*module-tab-item tab-item[^"']*["'][^>]*>(.*?)</div>"#, html)
+            .map { HTML.clean(HTML.first(#"<span\b[^>]*>(.*?)</span>"#, $0[1])) }
         var lines: [String: String] = [:]
-        let ids = Array(Set(episodes.map(\.line))).sorted { (Int($0) ?? 0) < (Int($1) ?? 0) }
-        for (index, id) in ids.enumerated() { lines[id] = index < names.count ? names[index] : "线路 \(id)" }
-        return MovieDetail(movie: movie, summary: summary, metadata: metadata, episodes: episodes,
+        for (index, id) in lineOrder.enumerated() {
+            lines[id] = index < names.count && !names[index].isEmpty ? names[index] : "线路 \(id)"
+        }
+        return MovieDetail(movie: fullMovie, summary: summary, metadata: metadata, episodes: episodes,
                            lines: lines, recommendations: Array(movies(html).filter { $0.id != movie.id }.prefix(12)))
     }
 

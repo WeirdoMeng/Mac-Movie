@@ -19,12 +19,13 @@ struct MacMovieApp {
         let delegate = MovieAppDelegate()
         app.delegate = delegate
         app.setActivationPolicy(.regular)
-        if arguments.contains(where: { ["--probe", "--relay-probe", "--audit", "--window-check"].contains($0) }) {
+        if arguments.contains(where: { ["--probe", "--probe-new-site", "--relay-probe", "--audit", "--window-check"].contains($0) }) {
             setbuf(stdout, nil)
             Task { @MainActor in
                 do {
                     if arguments.contains("--window-check") { try await ShortcutChecks.windowCheck() }
                     else if arguments.contains("--audit") { try await Probe.audit() }
+                    else if arguments.contains("--probe-new-site") { try await Probe.newSitePlayback() }
                     else { try await Probe.run(useRelay: arguments.contains("--relay-probe"), retryDeniedMedia: !arguments.contains("--no-relay")) }
                     exit(0)
                 } catch {

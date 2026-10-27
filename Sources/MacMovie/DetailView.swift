@@ -49,7 +49,9 @@ struct DetailView: View {
             Button { model.toggleFavorite(detail.movie) } label: {
                 Label(model.isFavorite(detail.movie) ? "已收藏" : "收藏", systemImage: model.isFavorite(detail.movie) ? "heart.fill" : "heart")
             }
-            ShareLink(item: Beimi.base.appendingPathComponent("voddetail/\(detail.movie.id).html")) { Image(systemName: "square.and.arrow.up") }.help("分享影片页面")
+            if let page = Beimi.detailURL(detail.movie) {
+                ShareLink(item: page) { Image(systemName: "square.and.arrow.up") }.help("分享影片页面")
+            }
         }
     }
 

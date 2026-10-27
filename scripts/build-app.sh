@@ -6,6 +6,9 @@ export SWIFTPM_MODULECACHE_OVERRIDE="${TMPDIR:-/tmp}/mac-movie-swift-cache"
 swift build -c release --disable-sandbox --cache-path .build/cache --config-path .build/config --security-path .build/security --manifest-cache local
 bash scripts/make-icon.sh
 APP="dist/摸鱼视界.app"
+# Rebuild the bundle from scratch so a removed playback framework cannot
+# remain in a package produced after switching back to AVKit.
+rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/MacMovie "$APP/Contents/MacOS/MacMovie"
 cp .build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
@@ -21,8 +24,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>local.macmovie.demo</string>
 <key>CFBundleExecutable</key><string>MacMovie</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.3.7</string>
-<key>CFBundleVersion</key><string>10</string>
+<key>CFBundleShortVersionString</key><string>0.4.1</string>
+<key>CFBundleVersion</key><string>14</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

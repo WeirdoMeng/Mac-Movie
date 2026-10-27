@@ -44,6 +44,16 @@ struct PlaybackIssue {
         return false
     }
 
+    static func isCoreMedia15628(_ error: Error?) -> Bool {
+        var current = error as NSError?
+        for _ in 0..<8 {
+            guard let value = current else { break }
+            if value.domain == "CoreMediaErrorDomain" && value.code == -15628 { return true }
+            current = value.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
+    }
+
     init(error: Error?, fallback: String, mediaURL: URL?, events: [(status: Int, uri: String?)] = [], transport: String = "浏览器兼容，无 Referer", trace: [String] = []) {
         var chain: [NSError] = []
         var current = error as NSError?

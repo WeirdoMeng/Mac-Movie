@@ -282,7 +282,7 @@ struct CatalogView: View {
         if !model.searchTerm.isEmpty { return model.page.total.map { "共 \($0) 部影片" } ?? "搜索结果 · \(model.movies.count) 部影片" }
         if model.section.id == "history" { return "最近观看 · 自动保存播放进度" }
         if model.section.id == "favorites" { return "本机收藏 · \(model.favorites.count) 部影片" }
-        if model.section.id == "latest" { return "网站最近 100 个更新" }
+        if model.section.id == "latest" { return "网站最近更新" }
         if model.section.id == "rank" { return "摸鱼视界 · \(model.rankPeriod)" }
         return model.page.total.map { "共 \($0) 部影片" } ?? "摸鱼视界 · 为下一次观影找点灵感"
     }
@@ -316,11 +316,11 @@ struct CatalogView: View {
     private var rankControls: some View {
         (compact ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout())) {
             Picker("榜单", selection: Binding(get: { model.rankPeriod }, set: { model.setRankPeriod($0) })) {
-                ForEach(["总榜", "月榜", "周榜"], id: \.self) { Text($0) }
-            }.pickerStyle(.segmented).frame(width: 220)
-            if !model.page.rankSections.isEmpty {
+                ForEach(["总榜", "月榜", "周榜", "日榜"], id: \.self) { Text($0) }
+            }.pickerStyle(.segmented).frame(width: 260)
+            if !model.visibleRankSections.isEmpty {
                 Picker("分类", selection: $model.rankSection) {
-                    ForEach(model.page.rankSections.indices, id: \.self) { index in Text(model.page.rankSections[index].0).tag(index) }
+                    ForEach(model.visibleRankSections.indices, id: \.self) { index in Text(model.visibleRankSections[index].0).tag(index) }
                 }.frame(width: 180)
             }
         }.disabled(model.loading)
@@ -359,7 +359,14 @@ struct MovieCard: View {
                 GeometryReader { geometry in
                     AsyncImage(url: movie.poster) { phase in
                         if let image = phase.image { image.resizable().scaledToFill() }
-                        else { Rectangle().fill(.white.opacity(0.06)).overlay(Image(systemName: "film").font(.largeTitle).foregroundStyle(.secondary)) }
+                        else {
+                            Rectangle().fill(.white.opacity(0.06)).overlay {
+                                VStack(spacing: 10) {
+                                    Image(systemName: "film").font(.largeTitle)
+                                    if movie.poster == nil { Text(movie.title).font(.callout.bold()).multilineTextAlignment(.center).lineLimit(3) }
+                                }.foregroundStyle(.secondary).padding(12)
+                            }
+                        }
                     }.frame(width: geometry.size.width, height: geometry.size.height).clipped()
                 }.aspectRatio(2 / 3, contentMode: .fit)
                     .overlay(alignment: .bottomLeading) {
