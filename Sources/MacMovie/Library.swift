@@ -27,17 +27,16 @@ final class Library: ObservableObject {
     @Published var settings: PlayerSettings
     @Published var selectedLine = ""
     @Published var reverseEpisodes = false
-    @Published var rankSection = 0
-    @Published var rankPeriod = "总榜"
+    @Published var rankPeriod = "热度"
     @Published var searchTerm = ""
     let player = AVPlayer()
-    private let source = Beimi()
+    private let source = Boju()
     private let loadPage: (URL) async throws -> CatalogPage
     private let preferCompatibilityRelay: Bool
     private let retryDeniedMedia: Bool
     private var loadedPages = Set<URL>()
     private let local: LocalLibrary
-    private(set) var currentURL = Beimi.base
+    private(set) var currentURL = Boju.base
     private var catalogTask: Task<Void, Never>?
     private var detailTask: Task<Void, Never>?
     private var playTask: Task<Void, Never>?
@@ -68,12 +67,18 @@ final class Library: ObservableObject {
     init(defaults: UserDefaults = .standard, pageLoader: ((URL) async throws -> CatalogPage)? = nil, preferCompatibilityRelay: Bool = false, retryDeniedMedia: Bool = true) {
         self.preferCompatibilityRelay = preferCompatibilityRelay
         self.retryDeniedMedia = retryDeniedMedia
-        loadPage = pageLoader ?? { try await Beimi().page($0) }
+        loadPage = pageLoader ?? { try await Boju().page($0) }
         local = LocalLibrary(defaults: defaults)
-        favorites = local.data.favorites
-        history = local.data.history
+        favorites = local.data.favorites.filter { $0.id.hasPrefix(Boju.idPrefix) }
+        history = local.data.history.filter { $0.id.hasPrefix(Boju.idPrefix) }
         settings = local.data.settings
         error = local.readError
+        if local.readError == nil && (favorites.count != local.data.favorites.count || history.count != local.data.history.count) {
+            if let previous = defaults.data(forKey: LocalLibrary.key) {
+                defaults.set(previous, forKey: LocalLibrary.key + ".previous-source")
+            }
+            try? local.save(SavedLibrary(favorites: favorites, history: history, settings: settings))
+        }
         player.volume = settings.volume; player.isMuted = settings.muted
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 600), queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.tick() }
@@ -117,15 +122,7 @@ final class Library: ObservableObject {
     var movies: [Movie] {
         if searchTerm.isEmpty && section.id == "favorites" { return favorites }
         if searchTerm.isEmpty && section.id == "history" { return history.map(\.movie) }
-        if section.id == "rank", visibleRankSections.indices.contains(rankSection) { return visibleRankSections[rankSection].1 }
         return page.movies
-    }
-    var visibleRankSections: [(String, [Movie])] {
-        page.rankSections.compactMap { section in
-            let suffix = "·\(rankPeriod)"
-            guard section.0.hasSuffix(suffix) else { return nil }
-            return (String(section.0.dropLast(suffix.count)), section.1)
-        }
     }
     var title: String { searchTerm.isEmpty ? section.title : "“\(searchTerm)”的搜索结果" }
     var nextEpisode: Episode? { episode.flatMap { PlaybackPolicy.adjacent(to: $0, in: detail?.episodes ?? [], offset: 1) } }
@@ -137,16 +134,16 @@ final class Library: ObservableObject {
     var lineIDs: [String] { Array(Set(detail?.episodes.map(\.line) ?? [])).sorted { (Int($0) ?? 0) < (Int($1) ?? 0) } }
 
     func navigate(_ section: BrowseSection) {
-        self.section = section; showDetail = false; query = ""; searchTerm = ""; rankSection = 0; rankPeriod = "总榜"
-        if let path = section.path { load(URL(string: path, relativeTo: Beimi.base)!.absoluteURL) }
+        self.section = section; showDetail = false; query = ""; searchTerm = ""; rankPeriod = "热度"
+        if let path = section.path { load(URL(string: path, relativeTo: Boju.base)!.absoluteURL) }
         else { catalogTask?.cancel(); catalogGeneration = UUID(); loading = false; loadingMore = false; loadMoreError = nil; loadedPages = []; page = CatalogPage(); error = nil }
     }
 
     func search() {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !term.isEmpty else { navigate(section); return }
-        searchTerm = term; showDetail = false; rankSection = 0
-        load(Beimi.searchURL(term))
+        searchTerm = term; showDetail = false
+        load(Boju.searchURL(term))
     }
 
     func clearSearch() {
@@ -163,7 +160,7 @@ final class Library: ObservableObject {
             do {
                 let result = try await loadPage(url)
                 guard !Task.isCancelled, catalogGeneration == generation else { return }
-                page = result; rankSection = 0
+                page = result
             } catch {
                 guard !Task.isCancelled, catalogGeneration == generation else { return }
                 self.error = error.localizedDescription
@@ -197,7 +194,9 @@ final class Library: ObservableObject {
 
     func setRankPeriod(_ title: String) {
         rankPeriod = title
-        rankSection = 0
+        var components = URLComponents(url: Boju.base.appendingPathComponent("catalog/rank"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "by", value: title == "评分" ? "score" : title == "最新" ? "time" : "hits")]
+        load(components.url!)
     }
 
     func select(_ movie: Movie, resume: Bool = true) {

@@ -5,9 +5,6 @@ enum Theme {
     static let accent = Color(red: 0.96, green: 0.73, blue: 0.36)
     static let background = Color(red: 0.045, green: 0.05, blue: 0.065)
     static let surface = Color(red: 0.075, green: 0.085, blue: 0.105)
-    static func branded(_ text: String) -> String {
-        text.replacingOccurrences(of: "北觅影视", with: "摸鱼视界").replacingOccurrences(of: "北觅", with: "摸鱼视界")
-    }
 }
 
 struct AppIconView: View {
@@ -315,14 +312,9 @@ struct CatalogView: View {
 
     private var rankControls: some View {
         (compact ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout())) {
-            Picker("榜单", selection: Binding(get: { model.rankPeriod }, set: { model.setRankPeriod($0) })) {
-                ForEach(["总榜", "月榜", "周榜", "日榜"], id: \.self) { Text($0) }
+            Picker("排序", selection: Binding(get: { model.rankPeriod }, set: { model.setRankPeriod($0) })) {
+                ForEach(["热度", "评分", "最新"], id: \.self) { Text($0) }
             }.pickerStyle(.segmented).frame(width: 260)
-            if !model.visibleRankSections.isEmpty {
-                Picker("分类", selection: $model.rankSection) {
-                    ForEach(model.visibleRankSections.indices, id: \.self) { index in Text(model.visibleRankSections[index].0).tag(index) }
-                }.frame(width: 180)
-            }
         }.disabled(model.loading)
     }
 

@@ -7,54 +7,38 @@ enum Checks {
             if !condition() { throw SourceError.invalid("CHECK FAILED: " + message) }
         }
         let card = """
-        <a class="module-poster-item module-item" href="/voddetail/809444.html" title="兰香如故"><img data-original="https://example.com/poster.webp"><div class="module-item-note">更新至第47集</div><div class="module-item-douban">9.0</div></a>
+        <a class="public-list-exp" href="/voddetail/100.html" title="测试影片"><img data-src="https://example.com/poster.webp"><span class="public-list-prb">更新至第2集</span></a>
         """
-        let movies = Beimi.movies(card + card + "<a href='/voddetail/12.html'>排行榜</a>")
+        let movies = Boju.movies(card + card + "<a href='/voddetail/12.html'>导航</a>")
         try require(movies.count == 1, "目录去重及排除导航")
-        try require(movies.first?.id == "5dy:809444" && movies.first?.remark == "更新至第47集", "新站 ID 与更新状态")
+        try require(movies.first?.id == "boju:100" && movies.first?.remark == "更新至第2集", "新站 ID 与更新状态")
         try require(movies.first?.poster?.host == "example.com", "海报地址")
-        let movie = Movie(id: "5dy:809444", title: "兰香如故", poster: nil, remark: "")
-        let detail = Beimi.parseDetail("""
-        <div class="module-info-poster"><img data-original="/upload/sample.jpg"></div>
-        <span class="module-info-item-title">导演：</span><div class="module-info-item-content">阿甲</div>
-        <div class="module-info-introduction-content">剧情 &amp; 简介</div>
-        <div class="module-tab-item tab-item"><span>极清蓝光</span></div>
-        <div class="module-tab-item tab-item"><span>备用线路</span></div>
-        <a class="module-play-list-link" href="/vodplay/809444-10-1.html">第01集</a>
-        <a class="module-play-list-link" href="/vodplay/809444-4-1.html">第01集</a>
-        <a class="module-play-list-link" href="/vodplay/1224-1-1.html">其他影片</a>
+        let movie = Movie(id: "boju:100", title: "测试影片", poster: nil, remark: "")
+        let detail = Boju.parseDetail("""
+        <div class="detail-pic"><img data-src="https://example.com/detail.jpg"></div>
+        <div id="height_limit" class="text">剧情 &amp; 简介</div>
+        <strong>导演 :</strong><a>阿甲</a></div>
+        <div class="anthology-tab"><div class="swiper-wrapper"><a class="swiper-slide">播剧极速<span class="badge">2</span></a><a class="swiper-slide">备用线路<span class="badge">2</span></a></div></div>
+        <a class="this-link" href="/vodplay/100-6-1.html">第01集</a>
+        <a class="this-link" href="/vodplay/100-4-1.html">第01集</a>
+        <a class="this-link" href="/vodplay/101-1-1.html">其他影片</a>
         """, movie: movie)
         try require(detail.episodes.count == 2, "选集去重及排除其他影片")
         try require(detail.episodes.first?.title == "第01集", "选集标题")
-        try require(detail.episodes.map(\.line) == ["10", "4"], "保留不同线路")
-        try require(detail.lines["10"] == "极清蓝光", "线路名称")
-        try require(PlaybackPolicy.preferredEpisode(in: detail)?.line == "10", "优先选择已验证的蓝光线路")
+        try require(detail.episodes.map(\.line) == ["6", "4"], "保留不同线路")
+        try require(detail.lines["6"] == "播剧极速", "线路名称")
+        try require(PlaybackPolicy.preferredEpisode(in: detail)?.line == "6", "默认首条线路")
         try require(detail.metadata == "导演：阿甲", "详情字段")
         try require(detail.summary == "剧情 & 简介", "HTML 实体解码")
-        try require(detail.movie.poster?.absoluteString == "https://www.5dy17.top/upload/sample.jpg", "详情补全排行榜海报")
-        let html = #"<script>var player_aaaa={"encrypt":0,"url":"https:\/\/example.com\/index.m3u8?expires=1","vod_data":{"vod_name":"样本"}}</script>"#
-        let url = try Beimi.playbackURL(html)
-        try require(url.host == "example.com" && url.query == "expires=1", "播放地址及查询参数")
-        for invalid in [html.replacingOccurrences(of: "\"encrypt\":0", with: "\"encrypt\":2"), "<title>人机验证</title>"] {
-            var rejected = false
-            do { _ = try Beimi.playbackURL(invalid) } catch { rejected = true }
-            try require(rejected, "拒绝不支持的资源")
-        }
-        let pageHTML = """
-        <div class="module-class-item"><div class="module-item-title">地区</div><div class="module-item-box">
-        <a href="javascript:void(0)" class="active">日本</a><a href="/vodshow/2-韩国----------.html">韩国</a></div></div>
-        <div id="page"><span class="page-current">1</span><a href="/vodshow/2-日本-------2---.html">下一页</a><a href="/vodshow/2-日本-------4---.html">尾页</a></div>
-        找到 70 部
-        """
-        let page = Beimi.parsePage(pageHTML, url: URL(string: "https://www.5dy17.top/vodshow/2-日本----------.html")!)
-        try require(page.pageNumber == 1 && page.pageCount == 4 && page.total == 70, "分页及总数")
-        try require(page.previous == nil && page.next?.path.contains("日本") == true, "首尾页及保留筛选条件")
-        try require(page.filters.first?.options.first?.selected == true, "当前筛选状态")
-        try require(page.filters.first?.options.count == 2, "筛选选项")
-        try require(Beimi.internalURL("https://v.luttt.com/voddetail/1.html") == nil && Beimi.internalURL("javascript:void(0)") == nil, "拒绝旧站和脚本链接")
+        try require(detail.movie.poster?.absoluteString == "https://example.com/detail.jpg", "详情补全海报")
+        let search = Boju.movies("""
+        <div class="vod-detail style-detail cor4 search-list"><div class="detail-pic"><img data-src="https://example.com/search.jpg"></div><a href="/voddetail/102.html"><h3 class="slide-info-title">搜索结果</h3></a><span class="slide-info-remarks cor5">全1集</span></div><script>$('.mac-total').html('1');</script>
+        """)
+        try require(search.count == 1 && search[0].id == "boju:102", "搜索卡片解析")
+        try require(Boju.internalURL("https://example.org/voddetail/1.html") == nil && Boju.internalURL("javascript:void(0)") == nil, "拒绝外站和脚本链接")
         let first = detail.episodes[0]
-        let tenth = Episode(id: "/vodplay/809444-10-10.html", title: "第10集", url: URL(string: "https://www.5dy17.top/vodplay/809444-10-10.html")!, line: "10")
-        let second = Episode(id: "/vodplay/809444-10-2.html", title: "第02集", url: URL(string: "https://www.5dy17.top/vodplay/809444-10-2.html")!, line: "10")
+        let tenth = Episode(id: "/vodplay/100-6-10.html", title: "第10集", url: URL(string: "https://ysxq.cc/vodplay/100-6-10.html")!, line: "6")
+        let second = Episode(id: "/vodplay/100-6-2.html", title: "第02集", url: URL(string: "https://ysxq.cc/vodplay/100-6-2.html")!, line: "6")
         let list = [tenth, detail.episodes[1], second, first]
         try require(PlaybackPolicy.adjacent(to: first, in: list, offset: 1)?.id == second.id, "下一集采用数字顺序")
         try require(PlaybackPolicy.adjacent(to: tenth, in: list, offset: 1) == nil, "末集不跳到其他线路")
@@ -74,6 +58,12 @@ enum Checks {
         let restored = LocalLibrary(defaults: defaults)
         try require(restored.data.favorites.first?.id == movie.id && restored.data.history.first?.position == 120, "收藏和历史持久化")
         try require(restored.data.settings.rate == 1.5 && !restored.data.settings.autoNext, "播放设置持久化")
+        let old = Movie(id: "legacy:100", title: "旧片库条目", poster: nil, remark: "")
+        try storage.save(SavedLibrary(favorites: [old, movie], history: [record], settings: saved.settings))
+        let migrated = Library(defaults: defaults, pageLoader: { _ in CatalogPage() })
+        try require(migrated.favorites.map(\.id) == [movie.id] && migrated.history.count == 1, "切换片库后隔离旧影片")
+        try require(defaults.data(forKey: LocalLibrary.key + ".previous-source") != nil &&
+                    LocalLibrary(defaults: defaults).data.settings.rate == 1.5, "迁移前备份及播放设置保留")
         defaults.set(Data("broken".utf8), forKey: LocalLibrary.key)
         let recovered = LocalLibrary(defaults: defaults)
         try require(recovered.readError != nil && recovered.data.history.isEmpty && defaults.data(forKey: LocalLibrary.key + ".recovery") != nil, "本地记录损坏时保留原数据并可继续使用")

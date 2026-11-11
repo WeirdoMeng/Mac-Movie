@@ -27,8 +27,8 @@ struct DetailView: View {
                 episodes
                 Divider()
                 Text("影片信息").font(.title3.bold())
-                Text(Theme.branded(detail.metadata)).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                Text(detail.summary.isEmpty ? "暂无剧情简介" : Theme.branded(detail.summary)).font(.callout).lineSpacing(6).textSelection(.enabled)
+                Text(detail.metadata).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(detail.summary.isEmpty ? "暂无剧情简介" : detail.summary).font(.callout).lineSpacing(6).textSelection(.enabled)
                 if !detail.recommendations.isEmpty { recommendations }
             }.padding(.horizontal, compact ? 14 : 24).padding(.bottom, 30)
         }
@@ -49,7 +49,7 @@ struct DetailView: View {
             Button { model.toggleFavorite(detail.movie) } label: {
                 Label(model.isFavorite(detail.movie) ? "已收藏" : "收藏", systemImage: model.isFavorite(detail.movie) ? "heart.fill" : "heart")
             }
-            if let page = Beimi.detailURL(detail.movie) {
+            if let page = Boju.detailURL(detail.movie) {
                 ShareLink(item: page) { Image(systemName: "square.and.arrow.up") }.help("分享影片页面")
             }
         }
@@ -65,9 +65,9 @@ struct DetailView: View {
             }
                 if model.lineIDs.count > 1 {
                     Picker("线路", selection: Binding(get: { model.selectedLine }, set: { model.switchLine($0) })) {
-                        ForEach(model.lineIDs, id: \.self) { id in Text(Theme.branded(detail.lines[id] ?? "线路 \(id)")).tag(id) }
+                        ForEach(model.lineIDs, id: \.self) { id in Text(detail.lines[id] ?? "线路 \(id)").tag(id) }
                     }.frame(maxWidth: 230)
-                } else { Text(Theme.branded(detail.lines[model.selectedLine] ?? "")).font(.caption).foregroundStyle(.secondary) }
+                } else { Text(detail.lines[model.selectedLine] ?? "").font(.caption).foregroundStyle(.secondary) }
             if model.visibleEpisodes.isEmpty { Text("当前线路没有可识别的剧集。").foregroundStyle(.secondary) }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 10)], spacing: 10) {
                 ForEach(model.visibleEpisodes) { episode in

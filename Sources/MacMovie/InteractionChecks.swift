@@ -47,7 +47,6 @@ enum InteractionChecks {
         model.loadMore(); model.load(reset); try await settled(model)
         try await Task.sleep(nanoseconds: 60_000_000)
         try check(model.movies.map(\.id) == ["reset"] && model.page.next == nil, "切换目录后丢弃旧追加结果")
-        try check(Theme.branded("北觅影视 · 北觅") == "摸鱼视界 · 摸鱼视界", "动态字段统一应用名称")
         model.navigate(BrowseSection.all.first { $0.id == "favorites" }!)
         model.query = "尚未提交"
         let requestCount = requests.values.reduce(0, +)

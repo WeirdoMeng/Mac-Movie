@@ -123,7 +123,7 @@ final class WebPlaybackResolver: NSObject, WKScriptMessageHandler, WKNavigationD
           v.querySelectorAll('source').forEach(s => report(s.src, true));
         });
         // Inspect the live JS object, including values populated after scripts run.
-        Object.keys(window).filter(k => /^player_[a-z0-9_]+$/i.test(k)).forEach(k => {
+        Object.keys(window).filter(k => /^(?:mac_)?player_[a-z0-9_]+$/i.test(k)).forEach(k => {
           try { const p = window[k]; if (p && Number(p.encrypt || 0) === 0) report(p.url, false); } catch (_) {}
         });
       }
